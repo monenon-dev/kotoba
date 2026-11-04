@@ -1,0 +1,42 @@
+# ===== 환경변수 / 비밀 =====
+.env
+.env.*
+!.env.example
+
+# ===== Gradle / Java 빌드 결과물 =====
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+out/
+bin/
+*.class
+*.log
+
+# H2 파일 DB를 쓰게 될 경우 대비
+*.mv.db
+*.trace.db
+
+# ===== Flutter / Dart (app/ 추가 대비) =====
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.pub-cache/
+.pub/
+
+# ===== IDE =====
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.classpath
+.project
+.settings/
+.factorypath
+.sts4-cache/
+.apt_generated/
+
+# ===== OS =====
+.DS_Store
+Thumbs.db
+desktop.ini

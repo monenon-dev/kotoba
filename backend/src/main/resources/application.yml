@@ -1,0 +1,16 @@
+# 공통 설정 (모든 프로필에 적용)
+spring:
+  application:
+    name: kotoba-backend
+  profiles:
+    # 프로필을 지정하지 않으면 dev 로 실행된다. 운영은 SPRING_PROFILES_ACTIVE=prod 로 명시.
+    default: dev
+  jpa:
+    # 뷰 렌더링 시점까지 DB 커넥션을 붙잡지 않도록 끈다 (REST API 에서는 불필요).
+    open-in-view: false
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health

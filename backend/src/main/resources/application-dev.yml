@@ -1,0 +1,18 @@
+# 개발용: H2 인메모리 DB (PostgreSQL 호환 모드). 앱을 재시작하면 데이터가 초기화된다.
+spring:
+  datasource:
+    url: jdbc:h2:mem:kotoba;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH
+    username: sa
+    password:
+    driver-class-name: org.h2.Driver
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+    properties:
+      hibernate:
+        format_sql: true
+    show-sql: true
+  h2:
+    console:
+      enabled: true
+      path: /h2-console

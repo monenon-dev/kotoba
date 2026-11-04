@@ -1,0 +1,14 @@
+# 운영용: PostgreSQL. 접속 정보는 환경변수로만 받는다 (값을 이 파일에 쓰지 말 것).
+spring:
+  datasource:
+    url: ${DB_URL}
+    username: ${DB_USERNAME}
+    password: ${DB_PASSWORD}
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    hibernate:
+      # 운영에서는 스키마를 자동 변경하지 않고, 엔티티와 일치하는지 검증만 한다.
+      ddl-auto: validate
+  h2:
+    console:
+      enabled: false
