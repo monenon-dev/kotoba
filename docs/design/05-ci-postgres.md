@@ -1,6 +1,7 @@
 # 5단계 설계: GitHub Actions CI 와 PostgreSQL 전환 (Flyway)
 
-> 상태: **구현 완료, CI 검증 대기**. 배포(EC2)와 Flutter 는 이 단계 범위가 아닙니다.
+> 상태: **구현 완료, CI 검증 완료** (2026-11-05). 배포(EC2)와 Flutter 는 이 단계 범위가 아닙니다.
+> 첫 CI 실행 결과는 11절, 검증 실험(E1~E3) 결과는 8절을 참고하세요.
 > 검토 때 확정한 사항: 확인 요청 6개는 모두 제안대로 진행. 실험 후 로컬과 원격의 검증 브랜치를 모두 삭제하고 결과를 이 문서에 기록. `validate`가 varchar 길이를 못 잡으면 `SchemaConsistencyTest`에 길이 검사를 둠. 검사 범위는 인덱스, UNIQUE, FK, NOT NULL, 길이로 한정.
 >
 > 구현하면서 확인한 것:
@@ -147,6 +148,30 @@ jobs:
 - 실험 순서: 브랜치 `ci-check/schema-drift`에 E1·E2를 넣고 push → `gh run watch`로 결과 확인 → 브랜치 삭제.
 - 이 실험은 원격에 브랜치를 push하는 일이므로, **실행 전에 다시 승인을 받습니다.**
 
+### 실험 결과 (2026-11-05)
+
+- **진행 방식:** 세 실험을 한 커밋에 넣으면 E1 때문에 컨텍스트가 먼저 실패해서 E2·E3를 따로 볼 수 없습니다. 그래서 같은 브랜치에 **커밋을 하나씩 push**했습니다. 매번 이전 실험을 되돌린 상태에서 한 가지만 바꿨고, 실행 전에 `git diff main`으로 변경이 하나뿐인지 확인했습니다.
+- **판정 근거:** 판정은 CI 아티팩트의 테스트 결과 XML로 했습니다.
+
+| 실험 | 바꾼 것 | 실행 | `h2` 작업 | `postgres` 작업 | 실패 테스트와 메시지 |
+|---|---|---|---|---|---|
+| **E1** | `Card`에 `@Column(length = 50) String note` 추가, 마이그레이션은 그대로 | [41866065454](https://github.com/monenon-dev/kotoba/actions/runs/41866065454) | ✅ 통과 (101개, 1개 건너뜀) | ❌ **실패: 67개** | 통합 테스트 67개 전부 컨텍스트 기동 실패. 근본 원인: `SchemaManagementException: Schema validation: missing column [note] in table [cards]`. DB와 무관한 단위 테스트 34개(알고리즘, JWT 설정)는 통과 |
+| **E2** | V1에서 `create index idx_cards_deck_id ...` 한 줄 삭제 | [41867304390](https://github.com/monenon-dev/kotoba/actions/runs/41867304390) | ✅ 통과 | ❌ **실패: 1개** | `SchemaConsistencyTest`만 실패: `cards: 인덱스 idx_cards_deck_id [deck_id] 가 없음`. 나머지 100개 통과 → **`validate`는 인덱스 누락을 잡지 못함** |
+| **E3** | V1의 `decks.name`을 `varchar(100)` → `varchar(150)` | [41867640869](https://github.com/monenon-dev/kotoba/actions/runs/41867640869) | ✅ 통과 | ❌ **실패: 1개** | `SchemaConsistencyTest`만 실패: `decks.name: 길이가 다름 (엔티티 100, DB 150)`. 나머지 100개 통과 → **`validate`는 varchar 길이 차이를 잡지 못함** |
+
+**결론**
+- **두 겹 검사가 모두 필요합니다.** 컬럼 누락처럼 구조가 어긋나는 문제는 Hibernate `validate`가 잡습니다. 인덱스와 길이 차이는 `validate`가 그대로 통과시키고, `SchemaConsistencyTest`만 잡습니다.
+- **E3의 질문에 대한 답:** `validate`는 길이를 검사하지 않습니다. 그래서 `SchemaConsistencyTest`의 길이 검사는 꼭 있어야 합니다.
+- **H2 작업의 한계:** 세 실험 모두 `h2` 작업은 통과했습니다. 2절의 한계, 즉 "로컬과 H2 테스트만으로는 마이그레이션 누락을 잡을 수 없다"가 실제로 드러났습니다. `postgres` 작업을 **필수 검사**로 다뤄야 하는 이유입니다.
+- **E1의 실패 범위:** 실패한 테스트는 67개였지만 원인은 하나였습니다. CI 로그에서는 처음 실패한 `BackendApplicationTests`의 `Caused by`를 보면 바로 원인이 나옵니다. 나머지는 `ApplicationContext failure threshold (1) exceeded`로 빠르게 건너뛰므로 시간을 낭비하지 않습니다.
+
+**정리:** 실험 브랜치는 로컬(`git branch -D`)과 원격(`git push origin --delete`)에서 모두 삭제했습니다. 삭제 확인 결과는 다음과 같습니다.
+- `git ls-remote --heads origin`에는 `refs/heads/main`만 남았습니다.
+- GitHub API로 브랜치를 조회하면 `Branch not found (HTTP 404)`입니다.
+- main은 실험 전과 같은 `0deefea`이고, 작업 트리도 깨끗합니다.
+
+실험 커밋 3개는 main에 들어가지 않았습니다. 브랜치가 삭제되었으므로 GitHub가 정리할 때 함께 사라집니다. Actions 실행 기록과 링크는 남아 있습니다.
+
 ## 9. 타이밍에 민감한 테스트의 flaky 평가
 
 | 테스트 | 위험 | 평가 |
@@ -172,3 +197,18 @@ CI `postgres` 작업이 통과한 뒤 항목별로 표시합니다.
 - 이 두 가지를 구분해 표시하고, 근거(어느 테스트나 단계인지)를 함께 적습니다.
 
 README 상단에 CI 배지를 추가합니다: `https://github.com/monenon-dev/kotoba/actions/workflows/ci.yml/badge.svg`
+
+## 11. 첫 CI 실행 결과 (run [41861684344](https://github.com/monenon-dev/kotoba/actions/runs/41861684344), 커밋 `0deefea`)
+
+| 작업 | 소요 | 테스트 | 건너뜀 | 실패 |
+|---|---|---|---|---|
+| build & test (H2) | 약 1분 20초 | 101 | 1 (`SchemaConsistencyTest`, 의도대로) | 0 |
+| test (PostgreSQL + Flyway) | 약 1분 30초 | 101 | **0** | 0 |
+
+- **실제로 PostgreSQL에서 돌았는지:** PostgreSQL 작업 로그에서 다음을 확인했습니다.
+  - `Database: jdbc:postgresql://localhost:5432/kotoba_ci (PostgreSQL 17.11)`
+  - `Successfully applied 1 migration to schema "public", now at version v1`
+  - 테스트는 H2와 같은 101개가 모두 통과했고, 동시 복습 테스트 두 개도 포함입니다.
+- **처음 push 실패:** 첫 push는 GitHub가 거부했습니다. 워크플로 파일을 올리려면 토큰에 `workflow` 권한이 필요한데 없었기 때문입니다(`refusing to allow an OAuth App to create or update workflow ... without workflow scope`). `gh auth refresh --scopes workflow`로 권한을 추가한 뒤 다시 push했습니다.
+- **상태 반영 지연:** 모든 단계가 끝난 뒤에도 GitHub의 실행 상태가 약 10분 동안 `in_progress`로 남아 있다가 `success`로 바뀌었습니다. GitHub 쪽 지연이었고, 워크플로 문제는 아니었습니다.
+- **flaky 관찰:** 첫 실행과 E1~E3 실행(E1은 컨텍스트 실패로 해당 없음)에서 동시성 테스트가 실패한 적은 없습니다. 아직 실행 횟수가 적으므로, 9절의 평가는 계속 지켜봐야 할 가설입니다.
