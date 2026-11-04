@@ -5,6 +5,10 @@ spring:
     username: sa
     password:
     driver-class-name: org.h2.Driver
+  # dev(H2)는 Hibernate 가 엔티티로 스키마를 만든다. 마이그레이션 SQL 은 PostgreSQL 문법이라 H2 에서 실행하지 않는다.
+  # 엔티티와 마이그레이션의 일치는 CI 의 postgres 작업(pgtest 프로필)이 검증한다.
+  flyway:
+    enabled: false
   jpa:
     hibernate:
       ddl-auto: create-drop

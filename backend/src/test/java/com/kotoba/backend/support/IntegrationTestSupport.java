@@ -6,6 +6,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
+import java.time.temporal.ChronoUnit;
 
 import org.hibernate.SessionFactory;
 import org.hibernate.stat.Statistics;
@@ -36,7 +37,7 @@ import jakarta.persistence.EntityManagerFactory;
  */
 @SpringBootTest
 @AutoConfigureMockMvc
-@ActiveProfiles("dev")
+@ActiveProfiles(resolver = TestDatabaseProfileResolver.class)
 @Import(TestClockConfig.class)
 public abstract class IntegrationTestSupport {
 
@@ -81,7 +82,8 @@ public abstract class IntegrationTestSupport {
 		deckRepository.deleteAllInBatch();
 		refreshTokenRepository.deleteAllInBatch();
 		memberRepository.deleteAllInBatch();
-		clock.setNow(Instant.now());
+		// Linux JDK 는 나노초까지 주지만 PostgreSQL 은 마이크로초로 반올림한다. 밀리초로 잘라 DB 왕복 후 값이 바뀌지 않게 한다.
+		clock.setNow(Instant.now().truncatedTo(ChronoUnit.MILLIS));
 	}
 
 	/** 회원가입 후 로그인해서 Access Token 을 돌려준다. */

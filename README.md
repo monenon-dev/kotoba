@@ -1,12 +1,15 @@
 # kotoba
 
+[![CI](https://github.com/monenon-dev/kotoba/actions/workflows/ci.yml/badge.svg)](https://github.com/monenon-dev/kotoba/actions/workflows/ci.yml)
+
 일본어 학습 앱 모노레포.
 
 ```
 kotoba/
-├── backend/   Spring Boot API 서버
-├── app/       Flutter 앱 (추가 예정)
-├── docs/      설계 문서
+├── .github/workflows/  CI (GitHub Actions)
+├── backend/            Spring Boot API 서버
+├── app/                Flutter 앱 (추가 예정)
+├── docs/               설계 문서
 └── README.md
 ```
 
@@ -16,6 +19,7 @@ kotoba/
 - 2단계: 회원가입, JWT 로그인 (Access/Refresh Token)
 - 3단계: 덱/카드 CRUD, 소유자 권한 ([설계 문서](docs/design/03-deck-card.md))
 - 4단계: 복습(SRS), 학습 기록, 통계 ([설계 문서](docs/design/04-srs-stats.md))
+- 5단계: GitHub Actions CI, PostgreSQL 전환(Flyway) ([설계 문서](docs/design/05-ci-postgres.md))
 
 AI 연동은 아직 없습니다.
 
@@ -25,6 +29,7 @@ AI 연동은 아직 없습니다.
 |---|---|
 | [docs/design/03-deck-card.md](docs/design/03-deck-card.md) | 덱/카드 ERD, 연관관계 방향, 403 대신 404, 삭제 방식, 페이지네이션, N+1 방지 |
 | [docs/design/04-srs-stats.md](docs/design/04-srs-stats.md) | 복습 알고리즘 수식, 날짜 경계(시간대), 신규 카드 한도, 연속 학습일, 낙관적 락, 통계 집계와 인덱스 |
+| [docs/design/05-ci-postgres.md](docs/design/05-ci-postgres.md) | CI 워크플로 구조, H2와 PostgreSQL 역할 분담과 한계, Flyway 규칙, 스키마 일치 검사, flaky 평가 |
 
 ## ERD
 
@@ -329,10 +334,39 @@ macOS/Linux에서는 `./gradlew`를 사용합니다.
 
 ## 프로필
 
-| 프로필 | DB | 설정 파일 |
+| 프로필 | DB | 스키마 | 설정 파일 |
+|---|---|---|---|
+| `dev` (기본) | H2 인메모리, `MODE=PostgreSQL` | Hibernate `create-drop` (Flyway 끔) | `application-dev.yml` |
+| `prod` | PostgreSQL (환경변수로 접속) | **Flyway** + Hibernate `validate` | `application-prod.yml` |
+| `pgtest` (테스트 전용) | PostgreSQL (CI 서비스 컨테이너) | **Flyway** + Hibernate `validate` | `src/test/resources/application-pgtest.yml` |
+
+## CI와 DB 마이그레이션
+
+**CI (GitHub Actions, `.github/workflows/ci.yml`)**
+
+push와 PR마다 두 작업이 병렬로 돕니다.
+
+| 작업 | DB | 하는 일 |
 |---|---|---|
-| `dev` (기본) | H2 인메모리, `MODE=PostgreSQL` | `application-dev.yml` |
-| `prod` | PostgreSQL (환경변수로 접속) | `application-prod.yml` |
+| `h2` | H2 | `./gradlew build` (빌드 + 전체 테스트). 로컬과 같은 조건 |
+| `postgres` | PostgreSQL 17 서비스 컨테이너 | `TEST_DB=postgres`로 **같은 테스트 전체**를 `pgtest` 프로필로 실행 + `SchemaConsistencyTest` |
+
+- **권한:** `contents: read`만 줍니다.
+- **비밀값:** `secrets`를 쓰지 않습니다. DB 비밀번호와 `JWT_SECRET`은 CI 전용 가짜 값입니다.
+- **결과물:** 테스트 리포트는 Actions 실행 화면의 Artifacts(`test-reports-h2`, `test-reports-postgres`)에서 7일간 받을 수 있습니다.
+- **로컬:** 로컬에는 Docker가 없어서 `.\gradlew.bat test`는 H2로만 돕니다. PostgreSQL 검증은 CI가 맡습니다.
+
+**엔티티와 스키마 일치 검사 (PostgreSQL 작업)**
+1. **Hibernate `ddl-auto: validate`:** 테이블, 컬럼, 타입을 검사합니다. 어긋나면 컨텍스트 기동이 실패해서 모든 테스트가 실패합니다.
+2. **`SchemaConsistencyTest`:** `validate`가 보지 않는 **인덱스, UNIQUE, FK, NOT NULL, varchar 길이**를 검사합니다. 엔티티 어노테이션과 PostgreSQL 카탈로그를 비교하며, 의도적으로 FK가 없는 컬럼에 FK가 생겨도 실패합니다.
+
+**Flyway 마이그레이션 규칙** (`backend/src/main/resources/db/migration`)
+1. 적용된(main에 머지된) 파일은 **수정하지 않습니다.** 변경은 새 파일 `V{번호}__{설명}.sql`로 합니다.
+2. 엔티티를 바꾸는 PR에는 마이그레이션도 함께 넣습니다. 빠뜨리면 CI `postgres` 작업이 실패합니다.
+3. PostgreSQL 문법으로 씁니다. H2에서는 실행하지 않습니다.
+4. 되돌리기도 새 마이그레이션으로 합니다. 운영에서 `flyway clean`은 금지입니다(Spring Boot 기본값).
+
+자세한 내용은 [설계 문서](docs/design/05-ci-postgres.md)를 참고하세요.
 
 `prod` 실행에 필요한 환경변수는 [`backend/.env.example`](backend/.env.example)을 참고하세요.
 
@@ -345,7 +379,7 @@ $env:JWT_SECRET="..."   # 32바이트 이상, 없으면 기동 실패
 .\gradlew.bat bootRun
 ```
 
-> 아직 실제 PostgreSQL에는 연결하지 않았습니다.
+> 운영 PostgreSQL은 아직 없습니다. 같은 설정(Flyway + validate)을 CI의 PostgreSQL 서비스 컨테이너에서 매번 검증합니다.
 
 ## 메모: PostgreSQL 전환 시 확인할 항목
 
@@ -378,3 +412,5 @@ H2의 PostgreSQL 호환 모드는 완전한 호환이 아닙니다. 실제 Postg
 | **회원 탈퇴 미구현** | 리뷰 로그에 `member_id`가 남고, 카드·덱 삭제와 무관하게 보존됨 | 탈퇴 기능을 만들 때 로그를 그대로 두면 개인 학습 기록이 남음 | 탈퇴 시 리뷰 로그를 **삭제하거나 익명화**(통계용 집계만 남기기). 복습 상태, 카드, 덱, 토큰 삭제 순서도 함께 설계 |
 | **비정규화 컬럼** | `review_states.deck_id`, `member_id`는 카드의 소속에서 복사한 값 | 지금은 카드를 다른 덱으로 옮기는 API가 없어서 문제없음 | **카드 이동 API를 추가하면** 같은 트랜잭션에서 `review_states.deck_id`(다른 회원에게 옮긴다면 `member_id`도)를 함께 갱신해야 함 |
 | 연속 학습일 최대 366 | 최근 366일만 조회 | 1년 넘게 연속 학습해도 366으로 표시 | 회원별 연속 기록을 따로 저장 |
+| **Actions 버전 고정 방식** | 워크플로의 액션을 주 버전 태그(`actions/checkout@v7` 등)로 지정 | 태그가 가리키는 커밋이 바뀌면 검토하지 않은 코드가 CI에서 실행될 수 있음 (공급망 위험) | Actions를 **커밋 SHA로 고정**하고, Dependabot으로 버전 업데이트 PR을 받기 |
+| **로컬 PostgreSQL 검증 없음** | 로컬에 Docker가 없어서 `gradlew test`는 H2로만 돎. 마이그레이션 오류는 push 후 CI에서만 잡힘 | 엔티티나 마이그레이션을 고칠 때 피드백이 느림 (push → CI 대기) | Docker를 쓸 수 있게 되면 **Testcontainers**로 로컬에서도 PostgreSQL 통합 테스트를 실행 (`TEST_DB=postgres`와 같은 경로를 재사용) |

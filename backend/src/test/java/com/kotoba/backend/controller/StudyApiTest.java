@@ -344,19 +344,19 @@ class StudyApiTest extends IntegrationTestSupport {
 				}));
 			}
 			start.countDown();
-			int ok = 0;
+			List<Integer> statuses = new ArrayList<>();
 			for (Future<Integer> result : results) {
-				int status = await(result);
-				assertThat(status).isIn(200, 409);
-				if (status == 200) {
-					ok++;
-				}
+				statuses.add(await(result));
 			}
+			// CI 에서 실패해도 원인을 볼 수 있게 응답 상태 목록을 메시지에 남긴다.
+			String context = "응답 상태 " + statuses;
+			long ok = statuses.stream().filter(s -> s == 200).count();
 
-			assertThat(ok).isGreaterThanOrEqualTo(1);
+			assertThat(statuses).as(context).allMatch(s -> s == 200 || s == 409);
+			assertThat(ok).as(context).isGreaterThanOrEqualTo(1);
 			ReviewState state = reviewStateRepository.findByCardId(cardId).orElseThrow();
-			assertThat(state.getRepetitions()).isEqualTo(1 + ok);
-			assertThat(reviewLogRepository.count()).isEqualTo(1 + ok);
+			assertThat(state.getRepetitions()).as(context).isEqualTo(1 + ok);
+			assertThat(reviewLogRepository.count()).as(context).isEqualTo(1 + ok);
 		}
 		finally {
 			executor.shutdownNow();

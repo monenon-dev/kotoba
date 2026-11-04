@@ -1,0 +1,23 @@
+# 테스트 전용: CI 의 PostgreSQL 서비스 컨테이너에서 prod 와 같은 방식(Flyway + validate)으로 통합 테스트를 돌린다.
+# 테스트 클래스패스에만 있으므로 운영 jar 에는 들어가지 않는다.
+# TEST_DB=postgres 일 때 TestDatabaseProfileResolver 가 이 프로필을 선택한다.
+# 접속 정보와 JWT_SECRET 은 환경변수로 받는다 (CI 워크플로에 CI 전용 가짜 값이 있다).
+spring:
+  datasource:
+    url: ${DB_URL}
+    username: ${DB_USERNAME}
+    password: ${DB_PASSWORD}
+    driver-class-name: org.postgresql.Driver
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
+
+jwt:
+  secret: ${JWT_SECRET:}
