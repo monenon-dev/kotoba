@@ -12,3 +12,7 @@ spring:
   h2:
     console:
       enabled: false
+
+jwt:
+  # 반드시 환경변수로 주입. 없으면 앱이 기동되지 않는다. (32바이트 이상)
+  secret: ${JWT_SECRET:}

@@ -5,9 +5,19 @@ spring:
   profiles:
     # 프로필을 지정하지 않으면 dev 로 실행된다. 운영은 SPRING_PROFILES_ACTIVE=prod 로 명시.
     default: dev
+  autoconfigure:
+    # JWT 로만 인증하므로 Boot 가 만드는 기본 인메모리 계정(로그에 임시 비밀번호 출력)을 끈다.
+    exclude: org.springframework.boot.security.autoconfigure.UserDetailsServiceAutoConfiguration
   jpa:
     # 뷰 렌더링 시점까지 DB 커넥션을 붙잡지 않도록 끈다 (REST API 에서는 불필요).
     open-in-view: false
+
+jwt:
+  # 기본은 빈 값. 비어 있으면 JwtProperties 검증에서 기동이 실패한다 (dev 만 기본값을 덮어씀).
+  secret: ${JWT_SECRET:}
+  issuer: kotoba
+  access-token-ttl: 30m
+  refresh-token-ttl: 14d
 
 management:
   endpoints:
