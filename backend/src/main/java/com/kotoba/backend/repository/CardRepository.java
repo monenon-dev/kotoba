@@ -25,6 +25,15 @@ public interface CardRepository extends JpaRepository<Card, Long> {
 
 	Page<Card> findByDeckId(Long deckId, Pageable pageable);
 
+	// 신규 카드 = 복습 상태 행이 없는 카드. 추가한 순서대로. review_states 의 UNIQUE(card_id) 인덱스로 판별한다.
+	@Query("""
+			select c from Card c
+			where c.deck.id = :deckId
+			  and not exists (select 1 from ReviewState s where s.card = c)
+			order by c.createdAt asc, c.id asc
+			""")
+	List<Card> findNewCards(@Param("deckId") Long deckId, Pageable pageable);
+
 	long countByDeckId(Long deckId);
 
 	/**

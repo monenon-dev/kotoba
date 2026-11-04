@@ -23,6 +23,7 @@ import com.kotoba.backend.repository.CardRepository;
 import com.kotoba.backend.repository.DeckCardCount;
 import com.kotoba.backend.repository.DeckRepository;
 import com.kotoba.backend.repository.MemberRepository;
+import com.kotoba.backend.repository.ReviewStateRepository;
 
 @Service
 public class DeckService {
@@ -36,13 +37,16 @@ public class DeckService {
 
 	private final MemberRepository memberRepository;
 
+	private final ReviewStateRepository reviewStateRepository;
+
 	private final Clock clock;
 
 	public DeckService(DeckRepository deckRepository, CardRepository cardRepository,
-			MemberRepository memberRepository, Clock clock) {
+			MemberRepository memberRepository, ReviewStateRepository reviewStateRepository, Clock clock) {
 		this.deckRepository = deckRepository;
 		this.cardRepository = cardRepository;
 		this.memberRepository = memberRepository;
+		this.reviewStateRepository = reviewStateRepository;
 		this.clock = clock;
 	}
 
@@ -87,13 +91,15 @@ public class DeckService {
 	}
 
 	/**
-	 * 덱과 속한 카드를 같은 트랜잭션에서 지운다. 카드 벌크 DELETE → 덱 벌크 DELETE 순서.
-	 * 카드를 먼저 지워야 덱의 외래키 제약에 걸리지 않는다.
-	 * 두 벌크 쿼리 모두 실행 전 flush, 실행 후 clear 하므로 영속성 컨텍스트가 DB 와 어긋나지 않는다.
+	 * 덱과 속한 카드를 같은 트랜잭션에서 지운다. 복습 상태 → 카드 → 덱 순서의 벌크 DELETE.
+	 * 외래키 방향의 역순으로 지워야 제약에 걸리지 않는다.
+	 * 벌크 쿼리 모두 실행 전 flush, 실행 후 clear 하므로 영속성 컨텍스트가 DB 와 어긋나지 않는다.
+	 * 리뷰 로그는 지우지 않는다 (연속 학습일과 지난 통계 보존).
 	 */
 	@Transactional
 	public void delete(Long memberId, Long deckId) {
 		findOwnedDeck(memberId, deckId);
+		reviewStateRepository.deleteAllByDeckId(deckId);
 		cardRepository.deleteAllByDeckId(deckId);
 		deckRepository.deleteInBulkById(deckId);
 	}

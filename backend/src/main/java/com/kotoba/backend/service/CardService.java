@@ -16,6 +16,7 @@ import com.kotoba.backend.domain.Deck;
 import com.kotoba.backend.exception.BusinessException;
 import com.kotoba.backend.exception.ErrorCode;
 import com.kotoba.backend.repository.CardRepository;
+import com.kotoba.backend.repository.ReviewStateRepository;
 
 @Service
 public class CardService {
@@ -27,11 +28,15 @@ public class CardService {
 
 	private final DeckService deckService;
 
+	private final ReviewStateRepository reviewStateRepository;
+
 	private final Clock clock;
 
-	public CardService(CardRepository cardRepository, DeckService deckService, Clock clock) {
+	public CardService(CardRepository cardRepository, DeckService deckService,
+			ReviewStateRepository reviewStateRepository, Clock clock) {
 		this.cardRepository = cardRepository;
 		this.deckService = deckService;
+		this.reviewStateRepository = reviewStateRepository;
 		this.clock = clock;
 	}
 
@@ -63,9 +68,15 @@ public class CardService {
 		return CardResponse.from(card);
 	}
 
+	/**
+	 * 복습 상태를 먼저 지우고 카드를 지운다 (외래키). 리뷰 로그는 남긴다.
+	 * 상태 벌크 DELETE 가 영속성 컨텍스트를 비우므로 카드는 id 로 다시 찾아 지운다.
+	 */
 	@Transactional
 	public void delete(Long memberId, Long deckId, Long cardId) {
-		cardRepository.delete(findOwnedCard(memberId, deckId, cardId));
+		findOwnedCard(memberId, deckId, cardId);
+		reviewStateRepository.deleteByCardId(cardId);
+		cardRepository.deleteById(cardId);
 	}
 
 	private Card findOwnedCard(Long memberId, Long deckId, Long cardId) {

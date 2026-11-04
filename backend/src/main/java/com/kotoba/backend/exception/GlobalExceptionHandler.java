@@ -8,6 +8,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
@@ -20,7 +21,14 @@ public class GlobalExceptionHandler {
 
 	@ExceptionHandler(BusinessException.class)
 	public ResponseEntity<ErrorResponse> handleBusiness(BusinessException e) {
-		return toResponse(ErrorResponse.of(e.getErrorCode()));
+		return toResponse(ErrorResponse.of(e.getErrorCode(), e.getErrors()));
+	}
+
+	// 필수 쿼리 파라미터 누락 (예: /api/stats/daily 의 from, to)
+	@ExceptionHandler(MissingServletRequestParameterException.class)
+	public ResponseEntity<ErrorResponse> handleMissingParameter(MissingServletRequestParameterException e) {
+		var error = new ErrorResponse.FieldError(e.getParameterName(), "필수 값입니다.");
+		return toResponse(ErrorResponse.of(ErrorCode.INVALID_INPUT, List.of(error)));
 	}
 
 	@ExceptionHandler(MethodArgumentNotValidException.class)

@@ -12,11 +12,8 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 
-import org.hibernate.SessionFactory;
-import org.hibernate.stat.Statistics;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.ResultActions;
@@ -26,16 +23,11 @@ import com.kotoba.backend.domain.Deck;
 import com.kotoba.backend.domain.Member;
 import com.kotoba.backend.support.IntegrationTestSupport;
 
-import jakarta.persistence.EntityManagerFactory;
-
 class DeckApiTest extends IntegrationTestSupport {
 
 	private static final String OWNER = "owner@example.com";
 
 	private static final String OTHER = "other@example.com";
-
-	@Autowired
-	private EntityManagerFactory entityManagerFactory;
 
 	private String ownerToken;
 
@@ -277,26 +269,6 @@ class DeckApiTest extends IntegrationTestSupport {
 		return mockMvc.perform(request.header(HttpHeaders.AUTHORIZATION, bearer(token))
 			.contentType(MediaType.APPLICATION_JSON)
 			.content(json));
-	}
-
-	private long countQueries(ThrowingRunnable action) throws Exception {
-		Statistics statistics = entityManagerFactory.unwrap(SessionFactory.class).getStatistics();
-		statistics.setStatisticsEnabled(true);
-		statistics.clear();
-		try {
-			action.run();
-			return statistics.getPrepareStatementCount();
-		}
-		finally {
-			statistics.setStatisticsEnabled(false);
-		}
-	}
-
-	@FunctionalInterface
-	private interface ThrowingRunnable {
-
-		void run() throws Exception;
-
 	}
 
 }

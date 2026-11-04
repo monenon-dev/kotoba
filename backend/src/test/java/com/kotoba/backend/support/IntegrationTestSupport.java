@@ -4,6 +4,11 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
+
+import org.hibernate.SessionFactory;
+import org.hibernate.stat.Statistics;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -20,6 +25,10 @@ import com.kotoba.backend.repository.CardRepository;
 import com.kotoba.backend.repository.DeckRepository;
 import com.kotoba.backend.repository.MemberRepository;
 import com.kotoba.backend.repository.RefreshTokenRepository;
+import com.kotoba.backend.repository.ReviewLogRepository;
+import com.kotoba.backend.repository.ReviewStateRepository;
+
+import jakarta.persistence.EntityManagerFactory;
 
 /**
  * 통합 테스트 공통 설정. 모든 통합 테스트가 같은 설정을 쓰면 Spring 테스트 컨텍스트(와 H2 DB)가 하나만 만들어진다.
@@ -32,6 +41,9 @@ import com.kotoba.backend.repository.RefreshTokenRepository;
 public abstract class IntegrationTestSupport {
 
 	protected static final String PASSWORD = "password1234";
+
+	/** application.yml 의 app.study.zone 기본값과 같다. */
+	protected static final ZoneId STUDY_ZONE = ZoneId.of("Asia/Seoul");
 
 	@Autowired
 	protected MockMvc mockMvc;
@@ -51,9 +63,20 @@ public abstract class IntegrationTestSupport {
 	@Autowired
 	protected CardRepository cardRepository;
 
+	@Autowired
+	protected ReviewStateRepository reviewStateRepository;
+
+	@Autowired
+	protected ReviewLogRepository reviewLogRepository;
+
+	@Autowired
+	private EntityManagerFactory entityManagerFactory;
+
 	@BeforeEach
 	void cleanDatabaseAndResetClock() {
 		// 외래키 방향의 역순으로 지운다.
+		reviewLogRepository.deleteAllInBatch();
+		reviewStateRepository.deleteAllInBatch();
 		cardRepository.deleteAllInBatch();
 		deckRepository.deleteAllInBatch();
 		refreshTokenRepository.deleteAllInBatch();
@@ -63,11 +86,17 @@ public abstract class IntegrationTestSupport {
 
 	/** 회원가입 후 로그인해서 Access Token 을 돌려준다. */
 	protected String signupAndLogin(String email) throws Exception {
-		String body = """
-				{"email": "%s", "password": "%s"}
-				""".formatted(email, PASSWORD);
-		mockMvc.perform(post("/api/auth/signup").contentType(MediaType.APPLICATION_JSON).content(body))
+		mockMvc.perform(post("/api/auth/signup").contentType(MediaType.APPLICATION_JSON).content(credentials(email)))
 			.andExpect(status().isCreated());
+		return login(email);
+	}
+
+	/**
+	 * 로그인해서 현재 Clock 기준의 새 Access Token 을 돌려준다.
+	 * Access Token 은 30분짜리라, Clock 을 30분 넘게 옮긴 테스트는 다시 로그인해야 한다.
+	 */
+	protected String login(String email) throws Exception {
+		String body = credentials(email);
 		String response = mockMvc
 			.perform(post("/api/auth/login").contentType(MediaType.APPLICATION_JSON).content(body))
 			.andExpect(status().isOk())
@@ -77,8 +106,40 @@ public abstract class IntegrationTestSupport {
 		return JsonPath.read(response, "$.accessToken");
 	}
 
+	private static String credentials(String email) {
+		return """
+				{"email": "%s", "password": "%s"}
+				""".formatted(email, PASSWORD);
+	}
+
 	protected Long memberIdOf(String email) {
 		return memberRepository.findByEmail(email).orElseThrow().getId();
+	}
+
+	/** 기준 시간대(Asia/Seoul)의 시각으로 Clock 을 맞춘다. 예: setSeoulTime(2026, 11, 4, 23, 59, 0) */
+	protected void setSeoulTime(int year, int month, int day, int hour, int minute, int second) {
+		clock.setNow(LocalDateTime.of(year, month, day, hour, minute, second).atZone(STUDY_ZONE).toInstant());
+	}
+
+	/** action 실행 중 Hibernate 가 준비한 SQL 문 수. N+1 이나 데이터 양에 비례하는 쿼리를 잡는 데 쓴다. */
+	protected long countQueries(ThrowingRunnable action) throws Exception {
+		Statistics statistics = entityManagerFactory.unwrap(SessionFactory.class).getStatistics();
+		statistics.setStatisticsEnabled(true);
+		statistics.clear();
+		try {
+			action.run();
+			return statistics.getPrepareStatementCount();
+		}
+		finally {
+			statistics.setStatisticsEnabled(false);
+		}
+	}
+
+	@FunctionalInterface
+	protected interface ThrowingRunnable {
+
+		void run() throws Exception;
+
 	}
 
 	protected static String bearer(String accessToken) {

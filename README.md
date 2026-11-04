@@ -15,14 +15,16 @@ kotoba/
 - 1단계: 백엔드 뼈대 (헬스체크, 프로필 분리)
 - 2단계: 회원가입, JWT 로그인 (Access/Refresh Token)
 - 3단계: 덱/카드 CRUD, 소유자 권한 ([설계 문서](docs/design/03-deck-card.md))
+- 4단계: 복습(SRS), 학습 기록, 통계 ([설계 문서](docs/design/04-srs-stats.md))
 
-SRS 복습 로직, 통계, AI 연동은 아직 없습니다.
+AI 연동은 아직 없습니다.
 
 ## 설계 문서
 
 | 문서 | 내용 |
 |---|---|
 | [docs/design/03-deck-card.md](docs/design/03-deck-card.md) | 덱/카드 ERD, 연관관계 방향, 403 대신 404, 삭제 방식, 페이지네이션, N+1 방지 |
+| [docs/design/04-srs-stats.md](docs/design/04-srs-stats.md) | 복습 알고리즘 수식, 날짜 경계(시간대), 신규 카드 한도, 연속 학습일, 낙관적 락, 통계 집계와 인덱스 |
 
 ## ERD
 
@@ -31,6 +33,8 @@ erDiagram
     members ||--o{ refresh_tokens : "보유"
     members ||--o{ decks : "소유"
     decks ||--o{ cards : "포함"
+    cards ||--o| review_states : "복습 상태 (0~1)"
+    members ||--o{ review_logs : "학습 기록"
 
     members {
         bigint id PK
@@ -65,12 +69,43 @@ erDiagram
         timestamp created_at
         timestamp updated_at
     }
+    review_states {
+        bigint id PK
+        bigint card_id FK,UK
+        bigint deck_id "비정규화"
+        bigint member_id "비정규화"
+        timestamp due_at
+        int interval_days
+        int ease_permille "x1000"
+        int repetitions
+        int lapses
+        timestamp last_reviewed_at
+        bigint version "낙관적 락"
+        timestamp created_at
+        timestamp updated_at
+    }
+    review_logs {
+        bigint id PK
+        bigint member_id FK
+        bigint deck_id "FK 없음"
+        bigint card_id "FK 없음"
+        varchar rating
+        boolean first_review
+        int previous_interval_days "NULL = 신규"
+        int new_interval_days
+        timestamp reviewed_at
+        date review_date "기준 시간대 날짜"
+    }
 ```
 
-- 연관관계는 모두 `@ManyToOne(LAZY)` 단방향입니다(컬렉션 없음).
+- 연관관계는 모두 단방향입니다(컬렉션 없음).
 - 카드의 소유자는 `cards → decks → members`로 판단합니다.
-- 덱을 삭제하면 서비스가 같은 트랜잭션에서 카드를 일괄 삭제한 뒤 덱을 삭제합니다. 외래키는 `ON DELETE CASCADE` 없이 기본 동작입니다.
-- 자세한 이유는 [설계 문서](docs/design/03-deck-card.md)를 참고하세요.
+- 덱을 삭제하면 서비스가 같은 트랜잭션에서 복습 상태 → 카드 → 덱 순서로 일괄 삭제합니다. 외래키는 `ON DELETE CASCADE` 없이 기본 동작입니다.
+- 카드·덱을 지워도 **리뷰 로그는 남깁니다.** 연속 학습일과 지난 통계를 유지하기 위해서입니다.
+- 인덱스는 다음과 같습니다.
+  - `review_states`: `UNIQUE(card_id)`, `(deck_id, due_at)`, `(member_id, due_at)`
+  - `review_logs`: `(member_id, review_date)`
+- 자세한 이유는 설계 문서([03](docs/design/03-deck-card.md), [04](docs/design/04-srs-stats.md))를 참고하세요.
 
 ## 기술 스택 (backend)
 
@@ -86,9 +121,10 @@ com.kotoba.backend
 ├── controller   HTTP 요청/응답 (REST API), controller/dto 에 요청·응답 DTO
 ├── service      비즈니스 로직, 트랜잭션 경계
 ├── repository   Spring Data JPA 리포지토리
-├── domain       엔티티 (Member, RefreshToken, Deck, Card)
+├── domain       엔티티 (Member, RefreshToken, Deck, Card, ReviewState, ReviewLog)
+├── srs          복습 알고리즘 SrsScheduler (Spring 의존 없는 순수 클래스)
 ├── security     JWT 발급·검증, 인증 필터, 401/403 응답
-├── config       SecurityFilterChain, PasswordEncoder, Clock
+├── config       SecurityFilterChain, PasswordEncoder, Clock, StudyProperties
 └── exception    ErrorCode, 전역 예외 처리
 ```
 
@@ -111,7 +147,11 @@ com.kotoba.backend
 | GET | `/api/decks/{deckId}/cards?page=&size=` | **필요** | 카드 목록 (추가한 순) | 200 페이지 |
 | GET | `/api/decks/{deckId}/cards/{cardId}` | **필요** | 카드 조회 | 200 카드 |
 | PUT | `/api/decks/{deckId}/cards/{cardId}` | **필요** | 카드 수정 (전체 교체) | 200 카드 |
-| DELETE | `/api/decks/{deckId}/cards/{cardId}` | **필요** | 카드 삭제 | 204 |
+| DELETE | `/api/decks/{deckId}/cards/{cardId}` | **필요** | 카드 삭제 (복습 상태도 삭제, 로그는 보존) | 204 |
+| GET | `/api/decks/{deckId}/study/due?limit=` | **필요** | 지금 복습할 카드 (기한 지난 카드 + 신규 한도 내 새 카드) | 200 |
+| POST | `/api/decks/{deckId}/cards/{cardId}/reviews` | **필요** | 복습 평가 `{rating}` → 상태 갱신 + 로그 저장 | 200 다음 복습 시각 |
+| GET | `/api/stats/summary` | **필요** | 오늘 복습 수, 기한 지난 카드 수, 연속 학습일, 최근 7일 정답률 | 200 |
+| GET | `/api/stats/daily?from=&to=` | **필요** | 날짜별 복습 수 (최대 90일) | 200 |
 
 인증이 필요한 요청은 `Authorization: Bearer <accessToken>` 헤더를 붙입니다.
 
@@ -167,6 +207,55 @@ com.kotoba.backend
 | `DECK_NOT_FOUND` | 404 | 덱이 없거나 내 덱이 아님 |
 | `CARD_NOT_FOUND` | 404 | 카드가 없거나, 내 카드가 아니거나, URL의 덱에 속하지 않음 |
 | `EMAIL_ALREADY_EXISTS` | 409 | 이미 가입된 이메일 |
+| `REVIEW_CONFLICT` | 409 | 같은 카드의 복습이 동시에 처리됨 (목록을 새로 받아 다시 시도) |
+
+## 복습(SRS)과 통계
+
+### 알고리즘 요약 (SM-2 단순화)
+
+카드마다 연속 성공 횟수 n, 간격 I(일), 난이도 계수 EF(초기 2.5, 하한 1.3)를 가집니다. 복습 후 평가에 따라 다음처럼 바뀝니다.
+
+| 평가 | 간격 | EF |
+|---|---|---|
+| AGAIN | 0, **10분 뒤** 다시 (n = 0, 실패 + 1) | −0.20 |
+| HARD | 첫 복습 1일, 이후 `I × 1.2` (GOOD 이하) | −0.15 |
+| GOOD | 1일 → `max(3, I + 1)` → `max(I + 1, I × EF)` | 그대로 |
+| EASY | 첫 복습 4일, 이후 `max(GOOD + 1, I × EF × 1.3)` | +0.15 |
+
+- **간격 상한과 순서:** 간격은 최대 365일입니다. n ≥ 1이면 `HARD ≤ GOOD < EASY`가 항상 지켜집니다.
+- **다음 복습 시각:** 간격이 1일 이상이면 기준 시간대의 **(오늘 + I)일 자정**입니다.
+- **예시:** 신규 카드에 계속 GOOD을 누르면 간격은 1 → 3 → 8 → 20일입니다.
+- **구현:** `SrsScheduler`는 Spring 없이 `Clock`과 시간대만 주입받는 순수 클래스입니다.
+
+### 규칙
+- **기준 시간대:** `app.study.zone`이고 기본값은 `Asia/Seoul`입니다. "오늘", 연속 학습일, 날짜별 통계가 모두 이 시간대의 자정을 경계로 합니다.
+- **신규 카드:** 복습 상태가 없는 카드입니다. 하루 한도는 `app.study.daily-new-card-limit`(기본 20)이고, 회원 단위로 모든 덱을 합산합니다.
+  - 오늘 시작한 수는 `review_logs`에서 `review_date = 오늘 AND first_review = TRUE`인 개수입니다.
+  - 한도는 due 목록을 만들 때만 적용하고, 복습 API는 막지 않습니다.
+- **due 목록:** 기한 지난 카드(`due_at` 오름차순)를 먼저 넣고, 남은 자리를 신규 카드(추가한 순)로 채웁니다. `limit`은 기본 20, 최대 100이고, 1 미만이면 400입니다.
+- **연속 학습일:** 오늘 복습했으면 오늘부터 셉니다. 아직 안 했으면 어제부터 거꾸로 셉니다. 오늘이 끝날 때까지는 끊기지 않고, 하루를 건너뛰면 0입니다. 최근 366일만 조회하므로 최대 366입니다.
+- **정답률:** 최근 7일(오늘 포함) 동안 AGAIN이 아닌 비율입니다. 복습이 없으면 `null`입니다.
+- **동시 복습:** 같은 카드의 복습이 동시에 오면 `@Version`(또는 첫 복습이면 `UNIQUE(card_id)`)으로 하나만 반영하고, 나머지는 409로 응답합니다.
+- **통계 쿼리:** 모두 DB 집계(`COUNT`, `SUM(CASE)`, `GROUP BY review_date`)입니다. summary는 쿼리 4개, daily는 1개로 데이터 양과 무관합니다.
+
+**복습 응답 예시**
+```json
+{ "cardId": 10, "rating": "GOOD", "reviewedAt": "2026-11-04T01:00:00Z",
+  "previousIntervalDays": 3, "intervalDays": 8, "easeFactor": 2.5,
+  "repetitions": 3, "lapses": 0, "dueAt": "2026-11-11T15:00:00Z" }
+```
+
+**summary 응답 예시**
+```json
+{ "today": "2026-11-04", "timeZone": "Asia/Seoul", "todayReviews": 12, "dueCards": 5, "streakDays": 7,
+  "last7Days": { "from": "2026-10-29", "to": "2026-11-04", "reviews": 80, "correct": 68, "accuracy": 0.85 } }
+```
+
+**daily 응답 예시** (`?from=2026-11-01&to=2026-11-03`, 기록이 없는 날은 0)
+```json
+{ "from": "2026-11-01", "to": "2026-11-03", "timeZone": "Asia/Seoul",
+  "days": [ { "date": "2026-11-01", "reviews": 20 }, { "date": "2026-11-02", "reviews": 0 }, { "date": "2026-11-03", "reviews": 15 } ] }
+```
 
 ## 인증 흐름
 
@@ -272,3 +361,20 @@ H2의 PostgreSQL 호환 모드는 완전한 호환이 아닙니다. 실제 Postg
 - [ ] **커넥션 풀 설정**: HikariCP `maximum-pool-size`, 타임아웃 값을 운영 환경에 맞게 조정합니다.
 - [ ] **시간 컬럼 타입**: `Instant` 필드(`created_at`, `expires_at`, `revoked_at`)가 `timestamptz`로 매핑되는지 확인합니다.
 - [ ] **refresh_tokens 정리**: 폐기·만료된 토큰이 계속 쌓이므로, 주기적으로 삭제하는 배치를 둡니다.
+- [ ] **날짜 계산 위치**: 통계는 DB의 날짜·시간대 함수를 쓰지 않습니다. Java에서 계산해 저장한 `review_logs.review_date`(DATE)로만 비교하고 `GROUP BY` 합니다. 앞으로 쿼리를 추가할 때도 `AT TIME ZONE`, `DATE_TRUNC`, `CAST(... AS DATE)` 같은 DB별 함수 대신 이 방식을 유지합니다.
+- [ ] **DB 세션 시간대**: `reviewed_at`, `due_at` 같은 `Instant` 컬럼이 PostgreSQL에서 `timestamptz`로 생성되고 UTC로 저장되는지 확인합니다. 필요하면 `hibernate.jdbc.time_zone=UTC`를 설정합니다.
+- [ ] **boolean / enum 컬럼**: `first_review`는 PostgreSQL `boolean`으로, `rating`은 `varchar`로 매핑되는지 확인합니다. 마이그레이션 스크립트에서 PostgreSQL enum 타입을 쓰지 않는 것을 권장합니다.
+- [ ] **낙관적 락과 격리 수준**: PostgreSQL 기본(READ COMMITTED)에서 `UPDATE ... WHERE version = ?`가 동시 갱신 시 0행이 되어 409로 이어지는지 확인합니다. `parallelReviewsNeverLoseUpdates` 테스트를 PostgreSQL(Testcontainers)로도 돌립니다.
+- [ ] **UNIQUE 위반 예외**: 첫 복습 동시 요청에서 `uk_review_states_card_id` 위반이 `DataIntegrityViolationException`으로 변환되어 409가 되는지 확인합니다.
+- [ ] **인덱스**: 마이그레이션에 `review_states(deck_id, due_at)`, `(member_id, due_at)`, `UNIQUE(card_id)`, `review_logs(member_id, review_date)`를 포함하고, `EXPLAIN`으로 due 조회와 통계 쿼리가 인덱스를 타는지 확인합니다.
+- [ ] **`NOT EXISTS` 신규 카드 조회**: 카드가 많은 덱에서 실행 계획(anti join)을 확인합니다.
+
+## 알려진 제한과 개선 후보
+
+| 항목 | 현재 동작 | 영향 | 개선 후보 |
+|---|---|---|---|
+| **날짜 경계가 자정** | 간격이 1일 이상인 카드는 기준 시간대의 자정부터 복습할 수 있음 | 밤 23:59에 GOOD(1일)을 누르면 **1분 뒤 자정에 다시 나옴**. 밤에 공부하는 사용자에게 어색함 | 하루 시작 시각을 **새벽 4시**처럼 설정할 수 있게 함 (Anki 방식). 날짜 계산을 `(시각 − 4시간)`의 날짜로 바꿈 |
+| **시간대 변경** | `review_date`를 저장 시점의 시간대로 계산해 저장 | `app.study.zone`을 바꾸면 과거 로그의 날짜가 예전 시간대 기준으로 남음. 연속 학습일과 날짜별 통계가 어긋날 수 있음 | 시간대를 바꿀 때 `reviewed_at`으로 `review_date`를 **다시 계산하는 마이그레이션**을 실행. 회원별 시간대가 필요하면 `members.time_zone` 추가 |
+| **회원 탈퇴 미구현** | 리뷰 로그에 `member_id`가 남고, 카드·덱 삭제와 무관하게 보존됨 | 탈퇴 기능을 만들 때 로그를 그대로 두면 개인 학습 기록이 남음 | 탈퇴 시 리뷰 로그를 **삭제하거나 익명화**(통계용 집계만 남기기). 복습 상태, 카드, 덱, 토큰 삭제 순서도 함께 설계 |
+| **비정규화 컬럼** | `review_states.deck_id`, `member_id`는 카드의 소속에서 복사한 값 | 지금은 카드를 다른 덱으로 옮기는 API가 없어서 문제없음 | **카드 이동 API를 추가하면** 같은 트랜잭션에서 `review_states.deck_id`(다른 회원에게 옮긴다면 `member_id`도)를 함께 갱신해야 함 |
+| 연속 학습일 최대 366 | 최근 366일만 조회 | 1년 넘게 연속 학습해도 366으로 표시 | 회원별 연속 기록을 따로 저장 |

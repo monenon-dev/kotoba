@@ -25,6 +25,13 @@ jwt:
   access-token-ttl: 30m
   refresh-token-ttl: 14d
 
+app:
+  study:
+    # "오늘", 연속 학습일, 날짜별 통계, 다음 복습 시각의 날짜 경계 기준
+    zone: Asia/Seoul
+    # 회원당(모든 덱 합산) 하루 신규 카드 수
+    daily-new-card-limit: 20
+
 management:
   endpoints:
     web:
