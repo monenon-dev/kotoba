@@ -25,6 +25,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.ResultActions;
+import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import com.kotoba.backend.domain.Card;
@@ -357,6 +358,100 @@ class StudyApiTest extends IntegrationTestSupport {
 			ReviewState state = reviewStateRepository.findByCardId(cardId).orElseThrow();
 			assertThat(state.getRepetitions()).as(context).isEqualTo(1 + ok);
 			assertThat(reviewLogRepository.count()).as(context).isEqualTo(1 + ok);
+		}
+		finally {
+			executor.shutdownNow();
+		}
+	}
+
+	/**
+	 * 신규 카드의 첫 복습이 동시에 들어오는 경로를 결정적으로 재현한다 (UNIQUE(card_id) 위반 → 409).
+	 *
+	 * READ COMMITTED 에서는 늦게 조회한 쪽이 먼저 커밋된 상태를 보고 "두 번째 복습"으로 정상 처리되므로,
+	 * A 를 REPEATABLE READ 로 열어 "상태 없음"을 본 스냅샷을 고정한다.
+	 * 순서: A 가 상태 없음을 읽음 → B(별도 스레드, HTTP)가 첫 복습을 커밋 → A 가 첫 복습으로 INSERT → UNIQUE 위반.
+	 */
+	@Test
+	void concurrentFirstReviewOfNewCardConflictsOnUniqueKey() throws Exception {
+		Long cardId = createCard(ownerToken, deckId, "新しい");
+		Long memberId = memberIdOf(OWNER);
+		TransactionTemplate repeatableRead = new TransactionTemplate(transactionTemplate.getTransactionManager());
+		repeatableRead.setIsolationLevel(TransactionDefinition.ISOLATION_REPEATABLE_READ);
+		ExecutorService executor = Executors.newSingleThreadExecutor();
+
+		try {
+			assertThatThrownBy(() -> repeatableRead.executeWithoutResult(tx -> {
+				// A: 신규 카드라 상태가 없음을 읽는다. 이 시점의 스냅샷이 트랜잭션 끝까지 유지된다.
+				assertThat(reviewStateRepository.findByCardId(cardId)).isEmpty();
+
+				// B: 다른 스레드에서 같은 카드의 첫 복습을 커밋한다.
+				Future<Integer> other = executor
+					.submit(() -> review(ownerToken, deckId, cardId, "GOOD").andReturn().getResponse().getStatus());
+				assertThat(await(other)).isEqualTo(200);
+
+				// A: 스냅샷상 여전히 상태가 없으므로 첫 복습으로 INSERT → UNIQUE(card_id) 위반
+				studyService.review(memberId, deckId, cardId, Rating.GOOD);
+			})).isInstanceOfSatisfying(BusinessException.class,
+					e -> assertThat(e.getErrorCode()).isEqualTo(ErrorCode.REVIEW_CONFLICT));
+		}
+		finally {
+			executor.shutdownNow();
+		}
+
+		// 반영된 것은 B 뿐: 상태 1행, 로그 1건(첫 복습), A 의 로그는 롤백
+		assertThat(reviewStateRepository.findAll()).filteredOn(s -> s.getCard().getId().equals(cardId)).hasSize(1);
+		assertThat(reviewStateRepository.findByCardId(cardId).orElseThrow().getRepetitions()).isEqualTo(1);
+		assertThat(reviewLogRepository.findAll()).filteredOn(log -> log.getCardId().equals(cardId))
+			.singleElement()
+			.satisfies(log -> assertThat(log.isFirstReview()).isTrue());
+	}
+
+	/**
+	 * 아직 한 번도 복습하지 않은 카드에 첫 복습 요청 8개를 동시에 보낸다.
+	 *
+	 * 결과 개수는 타이밍에 따라 다르다. 모두가 "상태 없음"을 본 뒤 경쟁하면 1개 성공 + 나머지 UNIQUE 위반(409)이고,
+	 * 첫 커밋 뒤에 조회한 요청은 "두 번째 복습"으로 정상 처리되어 200 이 된다 (올바른 동작).
+	 * 그래서 다음 불변식만 검증한다:
+	 * 500 없음(200/409 뿐), 상태 행은 카드당 1개, 첫 복습 로그는 정확히 1건, 로그 수 = 200 수 = 연속 성공 횟수.
+	 */
+	@Test
+	void parallelFirstReviewsOfNewCardKeepInvariants() throws Exception {
+		Long cardId = createCard(ownerToken, deckId, "新しい");
+
+		int threads = 8;
+		ExecutorService executor = Executors.newFixedThreadPool(threads);
+		CountDownLatch start = new CountDownLatch(1);
+		List<Future<Integer>> results = new ArrayList<>();
+		try {
+			for (int i = 0; i < threads; i++) {
+				results.add(executor.submit(() -> {
+					start.await();
+					return review(ownerToken, deckId, cardId, "GOOD").andReturn().getResponse().getStatus();
+				}));
+			}
+			start.countDown();
+			List<Integer> statuses = new ArrayList<>();
+			for (Future<Integer> result : results) {
+				statuses.add(await(result));
+			}
+			long ok = statuses.stream().filter(s -> s == 200).count();
+			String context = "응답 상태 " + statuses;
+			// 반복 실행 때 실제로 어떤 분포가 나왔는지 리포트에서 볼 수 있게 남긴다.
+			System.out.println("[parallelFirstReviews] " + context);
+
+			assertThat(statuses).as(context).allMatch(s -> s == 200 || s == 409);
+			assertThat(ok).as(context).isGreaterThanOrEqualTo(1);
+			assertThat(reviewStateRepository.findAll()).as(context)
+				.filteredOn(s -> s.getCard().getId().equals(cardId))
+				.hasSize(1);
+			List<ReviewLog> logs = reviewLogRepository.findAll()
+				.stream()
+				.filter(log -> log.getCardId().equals(cardId))
+				.toList();
+			assertThat(logs).as(context).filteredOn(ReviewLog::isFirstReview).hasSize(1);
+			assertThat(logs).as(context).hasSize((int) ok);
+			assertThat(reviewStateRepository.findByCardId(cardId).orElseThrow().getRepetitions()).as(context)
+				.isEqualTo((int) ok);
 		}
 		finally {
 			executor.shutdownNow();

@@ -178,6 +178,8 @@ jobs:
 |---|---|---|
 | `parallelReviewsNeverLoseUpdates` | 스레드 8개가 같은 행을 갱신. 몇 개가 409가 될지는 실행마다 다름 | **낮음.** 409 개수가 아니라 "200 수 = 반영 수 = 로그 수"라는 불변식만 검사. 최초 커밋자는 항상 성공하므로 `ok ≥ 1`도 항상 참. PostgreSQL에서는 뒤 요청이 행 잠금을 기다렸다가 `WHERE version = ?`를 다시 평가해 0행 → 409. 남은 위험은 커넥션 풀 고갈(스레드 8 < 풀 10)과 잠금 대기 시간 초과(PostgreSQL 기본은 무제한, `Future.get` 30초) |
 | `concurrentReviewOfSameCardConflicts` | 두 트랜잭션의 순서 | **없음.** "A 읽기 → B 커밋 → A 쓰기"를 코드로 순서대로 실행하는 결정적 테스트. A는 읽기만 해서 잠금이 없으므로 B가 기다리지 않음 |
+| `concurrentFirstReviewOfNewCardConflictsOnUniqueKey` (추가) | 신규 카드 첫 복습의 경쟁 순서 | **없음.** A를 `REPEATABLE READ`로 열어 "상태 없음" 스냅샷을 고정하고, B 커밋 후 A가 INSERT하게 해서 매번 UNIQUE 위반 경로를 탐. READ COMMITTED였다면 A가 B의 커밋을 보고 "두 번째 복습"으로 처리되어 이 경로를 재현할 수 없음 |
+| `parallelFirstReviewsOfNewCardKeepInvariants` (추가) | 신규 카드에 동시 요청 8개 | **낮음.** 불변식만 검사(500 없음, 상태 1행, 첫 복습 로그 1건, 로그 수 = 200 수). H2 5회 반복에서 매번 200 2개 + 409 6개. 200 중 하나는 첫 커밋 뒤에 조회해 정상적인 두 번째 복습으로 처리된 것이라 "정확히 1개 성공"은 불변식이 아님 |
 | 시각 기반 테스트 | 실제 시간 흐름 | **없음.** 모두 `MutableClock`으로 고정 |
 | **시각 정밀도** | `IntegrationTestSupport`가 Clock을 `Instant.now()`로 초기화함. Linux JDK는 **나노초**까지 줄 수 있는데 PostgreSQL은 마이크로초로 **반올림**함. DB에서 읽은 시각과 Clock 값을 정확히 비교하는 테스트가 있으면 드물게 1µs 차이로 실패할 수 있음 | **중간 (예방 필요).** 현재 핵심 시각 테스트는 `setSeoulTime`(초 단위)을 써서 안전함. 그래도 기본 초기화를 `Instant.now().truncatedTo(MILLIS)`로 바꿔 원인을 없앰 |
 | 쿼리 수 테스트 | Hibernate 통계가 DB에 따라 달라지는지 | **낮음.** 같은 JPQL이면 SQL 문 수가 같음. 두 크기에서 "같은지"를 비교하므로 절대값 차이에 강함. 다만 `≤ 4` 같은 상한이 PostgreSQL에서 다르면 실패하므로 첫 CI 실행에서 확인 |

@@ -405,9 +405,25 @@ H2의 PostgreSQL 호환 모드는 완전한 호환이 아닙니다. 아래 항�
 | ✅ | **DB 세션 시간대** | prod·pgtest에 `hibernate.jdbc.time_zone: UTC` 설정. `reviewDateUsesStudyZoneNotUtc` 등 시간대 테스트가 PostgreSQL에서 통과. 단 CI DB 세션은 원래 UTC라서, **UTC가 아닌 세션 시간대의 DB는 직접 검증하지 않음** |
 | ✅ | **boolean / enum 컬럼** | `first_review` → `boolean`, `rating`·`role` → `varchar` + `CHECK`(PostgreSQL enum 타입 사용 안 함). `validate` 통과 |
 | ✅ | **낙관적 락과 격리 수준** | `concurrentReviewOfSameCardConflicts`(409 확인)와 `parallelReviewsNeverLoseUpdates`(갱신 유실 없음)가 PostgreSQL 기본 격리 수준(READ COMMITTED)에서 통과 |
-| ⏳ | **UNIQUE 위반 → 409** | `uk_review_states_card_id` 제약이 있는 것은 확인됨(`SchemaConsistencyTest`). 하지만 **신규 카드 첫 복습이 동시에 들어와 UNIQUE 위반이 409로 바뀌는 경로**를 직접 재현하는 테스트는 없음. 추가 후보 |
+| ✅ | **UNIQUE 위반 → 409** | 신규 카드 첫 복습 동시 요청 경로를 테스트 2개로 검증. 두 테스트 모두 CI `postgres` 작업에서도 매 push 실행 (자세한 내용은 표 아래) |
 | ✅ | **인덱스 존재** | `review_states(deck_id, due_at)`, `(member_id, due_at)`, `UNIQUE(card_id)`, `review_logs(member_id, review_date)` 등 엔티티의 모든 인덱스가 있음(`SchemaConsistencyTest`, 실험 E2로 감지 확인) |
 | ⏳ | **인덱스 사용 여부(EXPLAIN)** | 테스트 데이터가 작아 실행 계획이 운영과 다름. 운영 규모 데이터에서 due 조회·통계·`NOT EXISTS` 신규 카드 조회의 실행 계획 확인 필요 |
+
+**UNIQUE 위반 → 409 검증 내용**
+
+신규 카드 첫 복습 동시 요청 경로는 테스트 2개로 검증합니다. 두 테스트 모두 H2에서 5회 반복 통과했고, CI `postgres` 작업에서도 매 push 실행됩니다.
+
+1. **`concurrentFirstReviewOfNewCardConflictsOnUniqueKey`** (결정적 재현)
+   - 순서: A가 `REPEATABLE READ` 스냅샷으로 "상태 없음"을 읽음 → B가 첫 복습을 커밋 → A가 INSERT → `UNIQUE(card_id)` 위반 → 409 `REVIEW_CONFLICT`
+   - 확인 결과: 상태 행은 1개이고, A의 로그는 롤백됨
+2. **`parallelFirstReviewsOfNewCardKeepInvariants`** (HTTP 요청 8개 동시)
+   - 결과 개수는 타이밍에 따라 다르므로 불변식만 검사합니다.
+     - 500 없음 (응답은 200 또는 409만)
+     - 상태 행은 카드당 1개
+     - `first_review` 로그는 정확히 1건
+     - 로그 수 = 200 응답 수 = `repetitions`
+   - H2 5회 반복에서 응답 분포는 매번 200 두 개와 409 여섯 개였습니다. 200 중 하나는 첫 커밋 뒤에 조회한 요청이 **정상적인 두 번째 복습**으로 처리된 것입니다. 그래서 "정확히 1개만 성공"은 불변식이 될 수 없습니다.
+3. **일부러 망가뜨려 확인:** UNIQUE 위반을 409로 바꾸는 예외 처리를 지우면 두 테스트가 모두 실패했습니다. 동시 요청 테스트에서는 500이 나왔습니다.
 
 ## 알려진 제한과 개선 후보
 
