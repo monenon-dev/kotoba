@@ -6,6 +6,7 @@
 kotoba/
 ├── backend/   Spring Boot API 서버
 ├── app/       Flutter 앱 (추가 예정)
+├── docs/      설계 문서
 └── README.md
 ```
 
@@ -13,8 +14,63 @@ kotoba/
 
 - 1단계: 백엔드 뼈대 (헬스체크, 프로필 분리)
 - 2단계: 회원가입, JWT 로그인 (Access/Refresh Token)
+- 3단계: 덱/카드 CRUD, 소유자 권한 ([설계 문서](docs/design/03-deck-card.md))
 
-도메인 기능(카드/덱 등)과 AI 연동은 아직 없습니다.
+SRS 복습 로직, 통계, AI 연동은 아직 없습니다.
+
+## 설계 문서
+
+| 문서 | 내용 |
+|---|---|
+| [docs/design/03-deck-card.md](docs/design/03-deck-card.md) | 덱/카드 ERD, 연관관계 방향, 403 대신 404, 삭제 방식, 페이지네이션, N+1 방지 |
+
+## ERD
+
+```mermaid
+erDiagram
+    members ||--o{ refresh_tokens : "보유"
+    members ||--o{ decks : "소유"
+    decks ||--o{ cards : "포함"
+
+    members {
+        bigint id PK
+        varchar email UK
+        varchar password_hash
+        varchar role
+        timestamp created_at
+    }
+    refresh_tokens {
+        bigint id PK
+        bigint member_id FK
+        varchar token_hash UK "SHA-256"
+        timestamp expires_at
+        timestamp created_at
+        timestamp revoked_at "NULL"
+    }
+    decks {
+        bigint id PK
+        bigint member_id FK
+        varchar name "1~100자"
+        varchar description "NULL, 500자 이하"
+        timestamp created_at
+        timestamp updated_at
+    }
+    cards {
+        bigint id PK
+        bigint deck_id FK
+        varchar text "표현, 1~200자"
+        varchar reading "읽기, NULL, 200자 이하"
+        varchar meaning "뜻, 1~500자"
+        varchar example "예문, NULL, 1000자 이하"
+        timestamp created_at
+        timestamp updated_at
+    }
+```
+
+- 연관관계는 모두 `@ManyToOne(LAZY)` 단방향입니다(컬렉션 없음).
+- 카드의 소유자는 `cards → decks → members`로 판단합니다.
+- 덱을 삭제하면 서비스가 같은 트랜잭션에서 카드를 일괄 삭제한 뒤 덱을 삭제합니다. 외래키는 `ON DELETE CASCADE` 없이 기본 동작입니다.
+- 자세한 이유는 [설계 문서](docs/design/03-deck-card.md)를 참고하세요.
 
 ## 기술 스택 (backend)
 
@@ -30,7 +86,7 @@ com.kotoba.backend
 ├── controller   HTTP 요청/응답 (REST API), controller/dto 에 요청·응답 DTO
 ├── service      비즈니스 로직, 트랜잭션 경계
 ├── repository   Spring Data JPA 리포지토리
-├── domain       엔티티 (Member, RefreshToken)
+├── domain       엔티티 (Member, RefreshToken, Deck, Card)
 ├── security     JWT 발급·검증, 인증 필터, 401/403 응답
 ├── config       SecurityFilterChain, PasswordEncoder, Clock
 └── exception    ErrorCode, 전역 예외 처리
@@ -46,8 +102,41 @@ com.kotoba.backend
 | POST | `/api/auth/refresh` | 불필요 | 토큰 재발급 `{refreshToken}` | 200 새 토큰 쌍 |
 | POST | `/api/auth/logout` | **필요** | Refresh Token 폐기 `{refreshToken}` | 204 |
 | GET | `/api/users/me` | **필요** | 내 정보 | 200 회원 정보 |
+| POST | `/api/decks` | **필요** | 덱 생성 `{name, description?}` | 201 덱 |
+| GET | `/api/decks?page=&size=` | **필요** | 내 덱 목록 (최신순, `cardCount` 포함) | 200 페이지 |
+| GET | `/api/decks/{deckId}` | **필요** | 덱 조회 | 200 덱 |
+| PUT | `/api/decks/{deckId}` | **필요** | 덱 수정 (전체 교체) | 200 덱 |
+| DELETE | `/api/decks/{deckId}` | **필요** | 덱 삭제 (속한 카드도 삭제) | 204 |
+| POST | `/api/decks/{deckId}/cards` | **필요** | 카드 생성 `{text, reading?, meaning, example?}` | 201 카드 |
+| GET | `/api/decks/{deckId}/cards?page=&size=` | **필요** | 카드 목록 (추가한 순) | 200 페이지 |
+| GET | `/api/decks/{deckId}/cards/{cardId}` | **필요** | 카드 조회 | 200 카드 |
+| PUT | `/api/decks/{deckId}/cards/{cardId}` | **필요** | 카드 수정 (전체 교체) | 200 카드 |
+| DELETE | `/api/decks/{deckId}/cards/{cardId}` | **필요** | 카드 삭제 | 204 |
 
 인증이 필요한 요청은 `Authorization: Bearer <accessToken>` 헤더를 붙입니다.
+
+**덱/카드 규칙**
+- **소유자 권한:** 본인의 덱과 카드만 접근할 수 있습니다. 남의 덱·카드나 없는 id는 403이 아니라 똑같이 404(`DECK_NOT_FOUND` / `CARD_NOT_FOUND`)입니다. 존재 여부를 드러내지 않기 위해서입니다. 카드가 URL의 덱에 속하지 않아도 404입니다.
+- **PUT은 전체 교체:** 선택 필드(`description`, `reading`, `example`)를 생략하면 `null`이 됩니다.
+- **페이지네이션:** `page`는 0부터 시작하고, `size`는 기본 20, **최대 100**입니다. 더 크게 요청하면 100으로 잘립니다. 정렬은 서버가 고정하며 `sort` 파라미터는 무시합니다.
+- **입력 규칙:** 덱 이름 1~100자, 설명 ≤500 / 카드 표현 1~200, 읽기 ≤200, 뜻 1~500, 예문 ≤1000
+
+**페이지 응답 형식**
+```json
+{ "content": [ ... ], "page": 0, "size": 20, "totalElements": 42, "totalPages": 3, "hasNext": true }
+```
+
+**덱 응답 예시**
+```json
+{ "id": 1, "name": "JLPT N3", "description": "N3 단어", "cardCount": 120,
+  "createdAt": "2026-11-04T12:00:00Z", "updatedAt": "2026-11-04T12:00:00Z" }
+```
+
+**카드 응답 예시**
+```json
+{ "id": 10, "deckId": 1, "text": "勉強", "reading": "べんきょう", "meaning": "공부",
+  "example": "毎日勉強します。", "createdAt": "2026-11-04T12:00:00Z", "updatedAt": "2026-11-04T12:00:00Z" }
+```
 
 **입력 규칙**: 이메일 형식, 255자 이하(대소문자 구분 없이 중복 체크) / 비밀번호 8~72자
 
@@ -70,11 +159,13 @@ com.kotoba.backend
 
 | code | HTTP | 상황 |
 |---|---|---|
-| `INVALID_INPUT` | 400 | Validation 실패 (`errors`에 필드별 사유) |
+| `INVALID_INPUT` | 400 | Validation 실패, 숫자가 아닌 id 등 (`errors`에 필드별 사유) |
 | `MALFORMED_REQUEST` | 400 | JSON 파싱 실패 |
 | `UNAUTHORIZED` | 401 | Access Token 없음/만료/위조 |
 | `INVALID_CREDENTIALS` | 401 | 이메일 또는 비밀번호 불일치 (어느 쪽인지 알려주지 않음) |
 | `INVALID_REFRESH_TOKEN` | 401 | Refresh Token 없음/만료/폐기/재사용 (사유를 구분하지 않음) |
+| `DECK_NOT_FOUND` | 404 | 덱이 없거나 내 덱이 아님 |
+| `CARD_NOT_FOUND` | 404 | 카드가 없거나, 내 카드가 아니거나, URL의 덱에 속하지 않음 |
 | `EMAIL_ALREADY_EXISTS` | 409 | 이미 가입된 이메일 |
 
 ## 인증 흐름

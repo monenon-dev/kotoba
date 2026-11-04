@@ -1,13 +1,11 @@
 package com.kotoba.backend;
 
 import org.junit.jupiter.api.Test;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.test.context.ActiveProfiles;
+
+import com.kotoba.backend.support.IntegrationTestSupport;
 
 // 전체 컨텍스트(JPA 포함)가 H2(dev 프로필)로 뜨는지 확인한다.
-@SpringBootTest
-@ActiveProfiles("dev")
-class BackendApplicationTests {
+class BackendApplicationTests extends IntegrationTestSupport {
 
 	@Test
 	void contextLoads() {

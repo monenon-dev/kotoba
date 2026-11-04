@@ -9,65 +9,30 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
-import java.time.Instant;
 import java.util.Base64;
 import java.util.Date;
 
 import javax.crypto.SecretKey;
 
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
-import org.springframework.context.annotation.Import;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
-import org.springframework.test.context.ActiveProfiles;
-import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.ResultActions;
 
 import com.jayway.jsonpath.JsonPath;
-import com.kotoba.backend.repository.MemberRepository;
-import com.kotoba.backend.repository.RefreshTokenRepository;
 import com.kotoba.backend.service.RefreshTokenCodec;
-import com.kotoba.backend.support.MutableClock;
-import com.kotoba.backend.support.TestClockConfig;
+import com.kotoba.backend.support.IntegrationTestSupport;
 
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.security.Keys;
 
-@SpringBootTest
-@AutoConfigureMockMvc
-@ActiveProfiles("dev")
-@Import(TestClockConfig.class)
-class AuthApiTest {
+class AuthApiTest extends IntegrationTestSupport {
 
 	private static final String EMAIL = "learner@example.com";
 
-	private static final String PASSWORD = "password1234";
-
-	@Autowired
-	private MockMvc mockMvc;
-
-	@Autowired
-	private MutableClock clock;
-
-	@Autowired
-	private MemberRepository memberRepository;
-
-	@Autowired
-	private RefreshTokenRepository refreshTokenRepository;
-
 	@Autowired
 	private RefreshTokenCodec refreshTokenCodec;
-
-	@BeforeEach
-	void setUp() {
-		refreshTokenRepository.deleteAll();
-		memberRepository.deleteAll();
-		clock.setNow(Instant.now());
-	}
 
 	// ===== 회원가입 =====
 

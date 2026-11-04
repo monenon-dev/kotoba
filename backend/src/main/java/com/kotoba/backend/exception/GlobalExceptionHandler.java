@@ -10,6 +10,7 @@ import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 @RestControllerAdvice
@@ -30,6 +31,13 @@ public class GlobalExceptionHandler {
 			.map(fe -> new ErrorResponse.FieldError(fe.getField(), fe.getDefaultMessage()))
 			.toList();
 		return toResponse(ErrorResponse.of(ErrorCode.INVALID_INPUT, errors));
+	}
+
+	// /api/decks/abc 처럼 경로·쿼리 파라미터의 타입이 맞지 않는 경우. 입력값은 응답에 넣지 않는다.
+	@ExceptionHandler(MethodArgumentTypeMismatchException.class)
+	public ResponseEntity<ErrorResponse> handleTypeMismatch(MethodArgumentTypeMismatchException e) {
+		var error = new ErrorResponse.FieldError(e.getName(), "형식이 올바르지 않습니다.");
+		return toResponse(ErrorResponse.of(ErrorCode.INVALID_INPUT, List.of(error)));
 	}
 
 	// 잘못된 JSON 등. 예외 메시지에 본문 일부가 들어 있을 수 있어 그대로 내보내지 않는다.
