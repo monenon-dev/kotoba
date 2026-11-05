@@ -28,5 +28,5 @@ USER 10001:10001
 EXPOSE 8080
 # start-period: 0.1 CPU 에서 기동에 약 4분까지 걸린 측정값을 기준으로 잡았다.
 HEALTHCHECK --interval=15s --timeout=5s --start-period=300s --start-interval=5s --retries=3 \
-    CMD curl -fsS http://localhost:8080/api/health > /dev/null || exit 1
+    CMD curl -fsS "http://localhost:${PORT:-8080}/api/health" > /dev/null || exit 1
 ENTRYPOINT ["java", "-jar", "/app/app.jar"]

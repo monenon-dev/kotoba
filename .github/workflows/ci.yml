@@ -169,6 +169,26 @@ jobs:
           logs=$(docker logs kotoba-app 2>&1)
           [[ "$logs" == *'The following 1 profile is active: "prod"'* ]]
 
+      # Render 처럼 PORT 를 넘겼을 때 앱과 HEALTHCHECK 가 모두 그 포트를 쓰는지 검사한다.
+      - name: Check app honors PORT
+        env:
+          NETWORK: ${{ job.services.postgres.network }}
+        run: |
+          docker run -d --name kotoba-port --network "$NETWORK" -p 127.0.0.1:10000:10000 \
+            -e PORT=10000 -e DB_URL -e DB_USERNAME -e DB_PASSWORD -e JWT_SECRET "$IMAGE"
+          status=starting
+          for _ in $(seq 1 48); do
+            status=$(docker inspect -f '{{.State.Health.Status}}' kotoba-port)
+            if [ "$status" = "healthy" ] || [ "$status" = "unhealthy" ]; then break; fi
+            sleep 5
+          done
+          echo "docker health: $status"
+          test "$status" = "healthy"
+          curl -fsS http://127.0.0.1:10000/api/health | jq -e '.status == "UP"'
+          logs=$(docker logs kotoba-port 2>&1)
+          [[ "$logs" == *'Tomcat started on port 10000'* ]]
+          docker rm -f kotoba-port
+
       # DB 설정은 정상으로 두고 JWT_SECRET 만 뺀다. 프로필도 주지 않는다.
       # 로그까지 보는 이유: 종료 코드만 보면 다른 이유로 죽어도 통과한다.
       - name: Check app refuses to start without JWT_SECRET
@@ -211,10 +231,31 @@ jobs:
           docker compose up -d --wait --wait-timeout 240
           curl -fsS -o /dev/null -X POST -H 'Content-Type: application/json' -d "$body" http://127.0.0.1:8080/api/auth/login
 
+      # 위 Compose 앱을 대상으로 시드 스크립트를 두 번 실행한다. 두 번째는 아무것도 만들지 않아야 한다.
+      - name: Check demo seed script
+        env:
+          KOTOBA_SEED_PASSWORD: ci-only-password
+        run: |
+          seed() { pwsh -NoProfile -File scripts/seed-demo.ps1 -BaseUrl http://127.0.0.1:8080 -Email seed@example.com; }
+          count=$(jq '.cards | length' scripts/seed-demo-data.json)
+          first=$(seed)
+          echo "$first"
+          [[ "$first" == *"created=$count"* ]]
+          second=$(seed)
+          echo "$second"
+          [[ "$second" == *"created=0"* ]]
+
+          # 일본어가 깨지지 않고 저장됐는지 API 응답과 원본 데이터를 비교한다.
+          body="{\"email\":\"seed@example.com\",\"password\":\"$KOTOBA_SEED_PASSWORD\"}"
+          token=$(curl -fsS -X POST -H 'Content-Type: application/json' -d "$body" http://127.0.0.1:8080/api/auth/login | jq -r .accessToken)
+          deck=$(curl -fsS -H "Authorization: Bearer $token" 'http://127.0.0.1:8080/api/decks?size=100' | jq '.content[0].id')
+          diff <(jq -S '[.cards[].text] | sort' scripts/seed-demo-data.json) \
+            <(curl -fsS -H "Authorization: Bearer $token" "http://127.0.0.1:8080/api/decks/$deck/cards?size=100" | jq -S '[.content[].text] | sort')
+
       - name: Show container logs
         if: always()
         run: |
-          for name in kotoba-app kotoba-no-jwt; do
+          for name in kotoba-app kotoba-port kotoba-no-jwt; do
             echo "::group::$name"
             docker logs "$name" 2>&1 || true
             echo "::endgroup::"

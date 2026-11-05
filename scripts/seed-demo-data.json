@@ -1,0 +1,18 @@
+{
+  "deck": {
+    "name": "Kotoba Demo",
+    "description": "시연용 일본어 기초 단어"
+  },
+  "cards": [
+    { "text": "勉強", "reading": "べんきょう", "meaning": "공부", "example": "毎日勉強します。" },
+    { "text": "学校", "reading": "がっこう", "meaning": "학교", "example": "学校へ行きます。" },
+    { "text": "友達", "reading": "ともだち", "meaning": "친구", "example": "友達に会います。" },
+    { "text": "電車", "reading": "でんしゃ", "meaning": "전철", "example": "電車で帰ります。" },
+    { "text": "朝ご飯", "reading": "あさごはん", "meaning": "아침밥", "example": "朝ご飯を食べました。" },
+    { "text": "天気", "reading": "てんき", "meaning": "날씨", "example": "今日はいい天気です。" },
+    { "text": "映画", "reading": "えいが", "meaning": "영화", "example": "週末に映画を見ます。" },
+    { "text": "買い物", "reading": "かいもの", "meaning": "쇼핑", "example": "駅で買い物をします。" },
+    { "text": "約束", "reading": "やくそく", "meaning": "약속", "example": "約束を守ります。" },
+    { "text": "練習", "reading": "れんしゅう", "meaning": "연습", "example": "発音を練習します。" }
+  ]
+}

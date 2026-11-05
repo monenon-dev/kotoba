@@ -1,4 +1,8 @@
 # 운영용: PostgreSQL. 접속 정보는 환경변수로만 받는다 (값을 이 파일에 쓰지 말 것).
+server:
+  # 호스팅 플랫폼(Render 등)이 넘기는 포트를 쓴다. 없으면 8080.
+  port: ${PORT:8080}
+
 spring:
   datasource:
     url: ${DB_URL}

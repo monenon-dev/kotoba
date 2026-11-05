@@ -10,6 +10,7 @@ kotoba/
 ├── backend/            Spring Boot API 서버
 ├── app/                Flutter 앱 (추가 예정)
 ├── docs/               설계 문서
+├── scripts/            시연 데이터 입력 스크립트
 ├── docker-compose.yml  앱 + PostgreSQL 컨테이너 실행
 ├── .env.example        Compose 환경변수 예시 (복사해서 .env 로 사용)
 └── README.md
@@ -22,7 +23,8 @@ kotoba/
 - 3단계: 덱/카드 CRUD, 소유자 권한 ([설계 문서](docs/design/03-deck-card.md))
 - 4단계: 복습(SRS), 학습 기록, 통계 ([설계 문서](docs/design/04-srs-stats.md))
 - 5단계: GitHub Actions CI, PostgreSQL 전환(Flyway) ([설계 문서](docs/design/05-ci-postgres.md))
-- 6-1단계: 컨테이너화와 CI 스모크 테스트 ([설계 문서](docs/design/06-deploy.md)). 실제 배포는 아직 하지 않았습니다.
+- 6-1단계: 컨테이너화와 CI 스모크 테스트 ([설계 문서](docs/design/06-deploy.md))
+- 6-2단계: Render 배포 준비 (`PORT` 대응, 체크리스트, 시연 데이터 스크립트) ([설계 문서](docs/design/06-deploy-render.md)). 실제 배포는 아직 하지 않았습니다.
 
 AI 연동은 아직 없습니다.
 
@@ -34,6 +36,7 @@ AI 연동은 아직 없습니다.
 | [docs/design/04-srs-stats.md](docs/design/04-srs-stats.md) | 복습 알고리즘 수식, 날짜 경계(시간대), 신규 카드 한도, 연속 학습일, 낙관적 락, 통계 집계와 인덱스 |
 | [docs/design/05-ci-postgres.md](docs/design/05-ci-postgres.md) | CI 워크플로 구조, H2와 PostgreSQL 역할 분담과 한계, Flyway 규칙, 스키마 일치 검사, flaky 평가 |
 | [docs/design/06-deploy.md](docs/design/06-deploy.md) | 배포 구조, 올릴 곳 후보 비교와 추천안, 비밀값·DB 포트·백업·롤백, 컨테이너 스모크 테스트, 메모리와 기동 시간 측정 |
+| [docs/design/06-deploy-render.md](docs/design/06-deploy-render.md) | Render 무료 조건 재확인, 카드 등록 근거, 포트 제한, 클릭 체크리스트, 실패 시 순서와 로그, 시연 데이터, 배포 후 확인 |
 
 ## ERD
 
@@ -381,11 +384,43 @@ docker compose exec -T db pg_restore -U <DB_USERNAME> -d <DB_NAME> --clean --if-
 docker compose start app
 ```
 
-**올릴 곳**
+## Render 배포
 
-아직 정하지 않았고 실제 배포도 하지 않았습니다. 후보 비교와 추천안은 [설계 문서](docs/design/06-deploy.md)를 참고하세요.
+**아직 배포하지 않았습니다.** 가입과 설정은 직접 진행하며, 순서는 [배포 체크리스트](docs/design/06-deploy-render.md)를 따릅니다. 올릴 곳을 고른 이유는 [후보 비교](docs/design/06-deploy.md)를 참고하세요.
 
-> **1순위 후보인 Render 무료 환경은 30일 시연용이며 데이터가 초기화될 수 있습니다.** 무료 PostgreSQL은 생성 후 30일이 지나면 만료되고 백업 기능이 없습니다. 만료 후에는 새 DB를 만들고 앱의 접속 정보를 바꾼 뒤 재배포하면 Flyway가 스키마를 다시 만듭니다. 이전 데이터는 복구되지 않으며, 데모 데이터 시딩은 6-2에서 다룹니다.
+> **Render 무료 환경은 30일 시연용이며 데이터가 초기화될 수 있습니다.** 무료 PostgreSQL은 생성 후 30일이 지나면 만료되고 백업 기능이 없습니다. 만료 후에는 새 DB를 만들고 앱의 접속 정보를 바꿔 재배포하면 Flyway가 스키마를 다시 만듭니다. 이전 데이터는 복구되지 않으며, 시연 데이터는 아래 스크립트로 다시 넣습니다.
+
+**환경변수**
+
+값은 Render 대시보드에만 입력합니다. 레포와 채팅에 쓰지 마세요.
+
+| 이름 | 필수 | 설명 |
+|---|---|---|
+| `DB_URL` | 필수 | JDBC 접속 주소. Render의 내부 URL에서 사용자와 비밀번호를 빼고 앞에 `jdbc:`를 붙입니다 ([방법](docs/design/06-deploy-render.md)) |
+| `DB_USERNAME` | 필수 | DB 사용자 |
+| `DB_PASSWORD` | 필수 | DB 비밀번호 |
+| `JWT_SECRET` | 필수 | JWT 서명 키. 32바이트 이상의 임의 값을 직접 만들어 넣습니다. 없거나 짧으면 앱이 뜨지 않습니다 |
+| `PORT` | 입력 안 함 | Render가 자동으로 넘깁니다. 앱이 읽어서 그 포트를 엽니다 (없으면 8080) |
+| `SPRING_PROFILES_ACTIVE` | 입력 안 함 | 이미지 기본값이 `prod`입니다 |
+| `JAVA_TOOL_OPTIONS` | 입력 안 함 | 이미지 기본값(힙 상한 40%)이 있습니다. 넣으면 기본값을 통째로 덮어씁니다 |
+
+**`JWT_SECRET` 만들기**
+
+아래 한 줄은 값을 화면에 출력하지 않고 클립보드로 복사합니다. Render 입력칸에 바로 붙여 넣은 뒤, 다른 글자를 복사해 클립보드를 덮어쓰세요. Windows 클립보드 기록(`Win + V`)을 쓴다면 거기서도 지우세요.
+
+```powershell
+$b = New-Object byte[] 48; [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($b); [Convert]::ToBase64String($b) | Set-Clipboard; Remove-Variable b
+```
+
+**시연 데이터 넣기**
+
+서버가 켜진 뒤 레포 루트에서 실행합니다. 잠든 서버를 깨우며 최대 7분 기다리고, 비밀번호는 실행할 때 입력받습니다. 다시 실행해도 중복되지 않습니다. 기본 이메일은 `demo@example.com`입니다.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\seed-demo.ps1 -BaseUrl <서버 주소>
+```
+
+> ⏳ **미검증:** 실제 Render와 `https://` 주소에서는 아직 실행해 보지 않았습니다. 로컬 Windows PowerShell 5.1과 CI PowerShell 7에서 `http://127.0.0.1`을 상대로만 확인했습니다.
 
 ## 프로필
 
@@ -405,7 +440,7 @@ push와 PR마다 두 작업이 병렬로 돕니다.
 |---|---|---|
 | `h2` | H2 | `./gradlew build` (빌드 + 전체 테스트). 로컬과 같은 조건 |
 | `postgres` | PostgreSQL 17 서비스 컨테이너 | `TEST_DB=postgres`로 **같은 테스트 전체**를 `pgtest` 프로필로 실행 + `SchemaConsistencyTest` |
-| `container` | PostgreSQL 17 서비스 컨테이너 | 이미지를 빌드해 비루트 실행, 헬스체크, `JWT_SECRET` 없을 때 기동 실패, Compose(DB 포트 비공개, 볼륨 유지)를 검사. 레지스트리 푸시와 배포는 하지 않음 |
+| `container` | PostgreSQL 17 서비스 컨테이너 | 이미지를 빌드해 비루트 실행, 헬스체크, `PORT` 적용, `JWT_SECRET` 없을 때 기동 실패, Compose(DB 포트 비공개, 볼륨 유지), 시연 데이터 스크립트를 검사. 레지스트리 푸시와 배포는 하지 않음 |
 
 - **권한:** `contents: read`만 줍니다.
 - **비밀값:** `secrets`를 쓰지 않습니다. DB 비밀번호와 `JWT_SECRET`은 CI 전용 가짜 값입니다.
@@ -495,6 +530,10 @@ H2의 PostgreSQL 호환 모드는 완전한 호환이 아닙니다. 아래 항�
 | **컨테이너 로컬 검증 없음** | 로컬에 Docker가 없어서 이미지와 Compose는 CI에서만 검증함. 백업·복구 절차는 실행해 보지 않음 | 복구가 실제로 되는지 모름. Windows에서의 실행도 미검증 | Docker를 쓸 수 있는 환경에서 백업과 복구를 한 번 실행하고, 6-2 전에 절차를 확정 |
 | **운영 이미지와 CI 이미지가 다름** | 레지스트리에 푸시하지 않으므로 플랫폼이 Dockerfile로 다시 빌드 | 같은 소스에서 빌드하지만 같은 결과물은 아님 | 레지스트리를 쓰기로 하면 CI가 검증한 이미지를 커밋 SHA 태그로 배포 |
 | **메모리와 기동 시간은 CI 참고값** | 512 MB 제한에서 힙 상한을 40%로 설정(60% 이상은 강제 종료). 0.1 CPU에서 첫 응답까지 약 2~4분. [측정 결과](docs/design/06-deploy.md) | Render 실제 값이 아님. 잠든 뒤 첫 요청이 몇 분 걸릴 수 있어 Flutter 앱에 대기 안내와 긴 타임아웃이 필요 | 6-2에서 실제 환경에서 측정 |
-| **Render 무료 환경은 30일 시연용** | 후보 조사 기준: 무료 DB가 30일 후 만료, 백업 없음, 15분 비활성 시 잠듦 | 데이터가 초기화될 수 있음. 실제 사용자 데이터를 넣으면 안 됨 | 계속 운영하려면 유료 전환이나 DB 분리를 결정 |
+| **Render 무료 환경은 30일 시연용** | 무료 DB가 30일 후 만료, 백업 없음, 15분 비활성 시 잠듦 | 데이터가 초기화될 수 있음. 실제 사용자 데이터를 넣으면 안 됨 | 계속 운영하려면 유료 전환이나 DB 분리를 결정 |
+| **잠든 서버의 응답 형식 미확인** | 서버가 깨어나는 동안 브라우저에는 로딩 페이지가 나온다고 문서에 있지만, API 클라이언트가 무엇을 받는지는 **미확인** | 앱이 JSON이 아닌 응답(HTML 등)을 받거나, 첫 요청이 몇 분 걸릴 수 있음 | **Flutter 클라이언트는 JSON이 아닌 응답을 오류로 처리**하고 파싱에서 죽지 않아야 함. 첫 요청용 **긴 타임아웃**, "서버를 깨우는 중" 안내, 재시도가 필요. 첫 배포에서 실제 응답을 확인 |
+| **JVM에 부족한 무료 사양** | Render는 JVM 앱에 `1c-2g` 이상을 권장. 무료 플랜은 0.1 CPU, 512 MB | CI 측정으로는 동작하지만 Render에서 안정적인지는 미확인 | 첫 배포에서 측정. 메모리 초과가 반복되면 플랜을 다시 논의 |
+| **공개 API에 요청 제한 없음** | 배포하면 회원가입과 로그인 API가 인터넷에 공개됨 | 0.1 CPU에서 BCrypt 요청이 몰리면 앱이 느려지거나 재시작될 수 있음 | 시연 후 계속 운영한다면 요청 제한을 추가 |
+| **월 대역폭과 빌드 시간 한도** | 2026-11-05 기준 Hobby 대역폭 5 GB, 빌드 500분. 결제 수단이 없을 때 대역폭을 넘기면 무료 서비스가 그달 말까지 정지, 빌드 시간을 넘기면 새 빌드 중단 | 한도를 넘기면 시연이 끊기거나 배포할 수 없음 | **가입 직전에 공식 문서 원문으로 다시 확인.** 대시보드에서 사용량 확인 |
 | **`/api/health`는 DB를 보지 않음** | 항상 `UP`을 반환. DB 상태는 `/actuator/health`에서 확인 | `HEALTHCHECK`가 healthy여도 DB 연결이 끊겼을 수 있음 | CI 스모크는 둘 다 확인. 운영 모니터링은 `/actuator/health`를 사용 |
 | **H2가 운영 이미지에 포함됨** | `runtimeOnly h2`와 h2console 의존성이 jar에 들어감. prod에서는 콘솔이 꺼져 있음 | 이미지 크기와 공격 표면이 조금 늘어남 | 개발 전용 의존성으로 분리 |
