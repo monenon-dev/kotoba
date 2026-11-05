@@ -102,3 +102,123 @@ jobs:
             backend/build/test-results/test
           retention-days: 7
           if-no-files-found: ignore
+
+  # 이미지를 빌드해 실제로 띄워 본다. 레지스트리에 푸시하거나 배포하지 않는다.
+  # 설계: docs/design/06-deploy.md
+  container:
+    name: container smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: .
+        shell: bash
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: kotoba_smoke
+          POSTGRES_USER: kotoba_smoke
+          POSTGRES_PASSWORD: ci-only-password
+        # ports 를 쓰지 않는다. 앱 컨테이너를 같은 네트워크에 붙여 접속한다.
+        options: >-
+          --health-cmd "pg_isready -U kotoba_smoke -d kotoba_smoke"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      IMAGE: kotoba-backend:${{ github.sha }}
+      DB_URL: jdbc:postgresql://postgres:5432/kotoba_smoke
+      DB_USERNAME: kotoba_smoke
+      DB_PASSWORD: ci-only-password
+      JWT_SECRET: ci-only-fake-jwt-secret-not-used-anywhere-0123456789
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build image
+        run: docker build -t "$IMAGE" backend
+
+      - name: Check image is non-root and has a healthcheck
+        run: |
+          uid=$(docker run --rm --entrypoint id "$IMAGE" -u)
+          echo "uid=$uid"
+          test "$uid" != "0"
+          healthcheck=$(docker inspect -f '{{json .Config.Healthcheck}}' "$IMAGE")
+          echo "healthcheck: $healthcheck"
+          [[ "$healthcheck" == *"/api/health"* ]]
+
+      # 프로필을 주지 않아 이미지 기본값(prod)으로 뜨는 경로를 검사한다.
+      - name: Check app starts and reports UP
+        env:
+          NETWORK: ${{ job.services.postgres.network }}
+        run: |
+          docker run -d --name kotoba-app --network "$NETWORK" -p 127.0.0.1:8080:8080 \
+            -e DB_URL -e DB_USERNAME -e DB_PASSWORD -e JWT_SECRET "$IMAGE"
+          status=starting
+          for _ in $(seq 1 48); do
+            status=$(docker inspect -f '{{.State.Health.Status}}' kotoba-app)
+            if [ "$status" = "healthy" ] || [ "$status" = "unhealthy" ]; then break; fi
+            sleep 5
+          done
+          echo "docker health: $status"
+          test "$status" = "healthy"
+          curl -fsS http://127.0.0.1:8080/api/health | jq -e '.status == "UP"'
+          # /api/health 는 DB 를 보지 않으므로 actuator 로 DB 연결까지 확인한다.
+          curl -fsS http://127.0.0.1:8080/actuator/health | jq -e '.status == "UP"'
+          # grep -q 는 찾자마자 끝나서 pipefail 에서 SIGPIPE(141)로 실패할 수 있어 변수로 받는다.
+          logs=$(docker logs kotoba-app 2>&1)
+          [[ "$logs" == *'The following 1 profile is active: "prod"'* ]]
+
+      # DB 설정은 정상으로 두고 JWT_SECRET 만 뺀다. 프로필도 주지 않는다.
+      # 로그까지 보는 이유: 종료 코드만 보면 다른 이유로 죽어도 통과한다.
+      - name: Check app refuses to start without JWT_SECRET
+        env:
+          NETWORK: ${{ job.services.postgres.network }}
+        run: |
+          docker run -d --name kotoba-no-jwt --network "$NETWORK" \
+            -e DB_URL -e DB_USERNAME -e DB_PASSWORD "$IMAGE"
+          if ! code=$(timeout 120 docker wait kotoba-no-jwt); then
+            echo "::error::JWT_SECRET 없이 120초 안에 종료되지 않았습니다."
+            exit 1
+          fi
+          echo "exit code: $code"
+          test "$code" != "0"
+          logs=$(docker logs kotoba-no-jwt 2>&1)
+          [[ "$logs" == *JWT_SECRET* ]]
+
+      # .env.example 을 그대로 복사해 쓰므로 예시 파일과 Compose 가 어긋나도 실패한다.
+      - name: Check docker compose
+        run: |
+          docker rm -f kotoba-app
+          cp .env.example .env
+          sed -i "s/^DB_PASSWORD=.*/DB_PASSWORD=$DB_PASSWORD/; s/^JWT_SECRET=.*/JWT_SECRET=$JWT_SECRET/" .env
+          docker compose up -d --build --wait --wait-timeout 240
+
+          db=$(docker compose ps -q db)
+          bindings=$(docker inspect -f '{{json .HostConfig.PortBindings}}' "$db")
+          echo "db port bindings: $bindings"
+          if [[ "$bindings" == *HostPort* ]]; then
+            echo "::error::DB 포트가 외부에 노출되어 있습니다."
+            exit 1
+          fi
+          test "$(docker inspect -f '{{.HostConfig.RestartPolicy.Name}}' "$db")" = "unless-stopped"
+          test "$(docker inspect -f '{{.HostConfig.RestartPolicy.Name}}' "$(docker compose ps -q app)")" = "unless-stopped"
+
+          # 컨테이너를 지웠다가 다시 만들어도 볼륨의 데이터가 남는지 확인한다.
+          body='{"email":"smoke@example.com","password":"ci-only-password"}'
+          curl -fsS -o /dev/null -X POST -H 'Content-Type: application/json' -d "$body" http://127.0.0.1:8080/api/auth/signup
+          docker compose down
+          docker compose up -d --wait --wait-timeout 240
+          curl -fsS -o /dev/null -X POST -H 'Content-Type: application/json' -d "$body" http://127.0.0.1:8080/api/auth/login
+
+      - name: Show container logs
+        if: always()
+        run: |
+          for name in kotoba-app kotoba-no-jwt; do
+            echo "::group::$name"
+            docker logs "$name" 2>&1 || true
+            echo "::endgroup::"
+          done
+          echo "::group::compose"
+          docker compose logs --no-color 2>&1 || true
+          echo "::endgroup::"

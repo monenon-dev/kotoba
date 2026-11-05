@@ -3,6 +3,10 @@
 .env.*
 !.env.example
 
+# ===== DB 덤프 (이메일과 비밀번호 해시가 들어 있음) =====
+*.dump
+backups/
+
 # ===== Gradle / Java 빌드 결과물 =====
 .gradle/
 build/

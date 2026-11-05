@@ -1,0 +1,22 @@
+# 비밀값이 빌드 컨텍스트에 들어가지 않게 한다.
+.env
+.env.*
+
+# 빌드 결과물과 로컬 캐시
+build/
+.gradle/
+out/
+bin/
+*.log
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# 이미지에 필요 없는 파일
+Dockerfile
+.dockerignore
+.gitattributes
+.gitignore
+*.md

@@ -10,6 +10,8 @@ kotoba/
 ├── backend/            Spring Boot API 서버
 ├── app/                Flutter 앱 (추가 예정)
 ├── docs/               설계 문서
+├── docker-compose.yml  앱 + PostgreSQL 컨테이너 실행
+├── .env.example        Compose 환경변수 예시 (복사해서 .env 로 사용)
 └── README.md
 ```
 
@@ -20,6 +22,7 @@ kotoba/
 - 3단계: 덱/카드 CRUD, 소유자 권한 ([설계 문서](docs/design/03-deck-card.md))
 - 4단계: 복습(SRS), 학습 기록, 통계 ([설계 문서](docs/design/04-srs-stats.md))
 - 5단계: GitHub Actions CI, PostgreSQL 전환(Flyway) ([설계 문서](docs/design/05-ci-postgres.md))
+- 6-1단계: 컨테이너화와 CI 스모크 테스트 ([설계 문서](docs/design/06-deploy.md)). 실제 배포는 아직 하지 않았습니다.
 
 AI 연동은 아직 없습니다.
 
@@ -30,6 +33,7 @@ AI 연동은 아직 없습니다.
 | [docs/design/03-deck-card.md](docs/design/03-deck-card.md) | 덱/카드 ERD, 연관관계 방향, 403 대신 404, 삭제 방식, 페이지네이션, N+1 방지 |
 | [docs/design/04-srs-stats.md](docs/design/04-srs-stats.md) | 복습 알고리즘 수식, 날짜 경계(시간대), 신규 카드 한도, 연속 학습일, 낙관적 락, 통계 집계와 인덱스 |
 | [docs/design/05-ci-postgres.md](docs/design/05-ci-postgres.md) | CI 워크플로 구조, H2와 PostgreSQL 역할 분담과 한계, Flyway 규칙, 스키마 일치 검사, flaky 평가 |
+| [docs/design/06-deploy.md](docs/design/06-deploy.md) | 배포 구조, 올릴 곳 후보 비교와 추천안, 비밀값·DB 포트·백업·롤백, 컨테이너 스모크 테스트, 메모리와 기동 시간 측정 |
 
 ## ERD
 
@@ -332,6 +336,57 @@ macOS/Linux에서는 `./gradlew`를 사용합니다.
 | http://localhost:8080/actuator/health | Actuator 헬스체크 (DB 상태 포함) |
 | http://localhost:8080/h2-console | H2 콘솔 (dev 전용). JDBC URL: `jdbc:h2:mem:kotoba`, 사용자 `sa`, 비밀번호 없음 |
 
+## 컨테이너 실행
+
+필요: Docker와 Docker Compose. 레포 루트에서 실행합니다.
+
+> ⏳ **미검증:** 아래 PowerShell 명령과 백업·복구 절차는 아직 실행해 보지 않았습니다. 개발 컴퓨터에 Docker가 없어서, `docker compose` 실행과 중지는 GitHub Actions(Linux)에서만 검증했습니다.
+
+```powershell
+# 1. 환경변수 파일을 만들고 값을 바꿉니다. .env 는 .gitignore 대상이라 커밋되지 않습니다.
+Copy-Item .env.example .env
+
+# 2. 앱과 PostgreSQL 을 prod 프로필로 실행합니다.
+docker compose up -d --build --wait
+
+# 3. 확인
+curl.exe http://127.0.0.1:8080/api/health
+curl.exe http://127.0.0.1:8080/actuator/health
+
+# 로그 보기, 중지 (볼륨의 데이터는 남습니다)
+docker compose logs -f app
+docker compose down
+```
+
+- **`JWT_SECRET`:** `.env.example`의 값은 일부러 짧게 두었습니다. 바꾸지 않으면 앱이 기동되지 않습니다.
+- **`DB_PASSWORD`:** DB를 처음 만들 때만 적용됩니다. 나중에 바꾸려면 DB 안에서 `ALTER USER`도 함께 실행해야 합니다.
+- **포트:** DB 포트는 외부에 열지 않습니다. 앱은 `127.0.0.1:8080`에서만 접속할 수 있습니다.
+- **`docker compose down -v`는 DB 데이터를 삭제합니다.** 볼륨까지 지우기 때문입니다.
+
+**백업과 복구 (⏳ 미검증: CI에서도 실행해 보지 않았습니다)**
+
+덤프에는 이메일과 비밀번호 해시가 들어 있으므로 커밋하거나 공유하지 않습니다. `*.dump`와 `backups/`는 `.gitignore` 대상입니다.
+
+PowerShell 5.1의 `>`는 바이너리 덤프를 망가뜨리므로 컨테이너 안에서 파일로 만든 뒤 꺼냅니다. `<DB_USERNAME>`과 `<DB_NAME>`은 `.env`의 값으로 바꿔서 실행합니다.
+
+```powershell
+# 백업
+docker compose exec -T db pg_dump -U <DB_USERNAME> -d <DB_NAME> -Fc -f /tmp/kotoba.dump
+docker compose cp db:/tmp/kotoba.dump ./kotoba.dump
+
+# 복구 (현재 DB 내용을 덮어씁니다. 앱을 먼저 멈춥니다)
+docker compose stop app
+docker compose cp ./kotoba.dump db:/tmp/kotoba.dump
+docker compose exec -T db pg_restore -U <DB_USERNAME> -d <DB_NAME> --clean --if-exists /tmp/kotoba.dump
+docker compose start app
+```
+
+**올릴 곳**
+
+아직 정하지 않았고 실제 배포도 하지 않았습니다. 후보 비교와 추천안은 [설계 문서](docs/design/06-deploy.md)를 참고하세요.
+
+> **1순위 후보인 Render 무료 환경은 30일 시연용이며 데이터가 초기화될 수 있습니다.** 무료 PostgreSQL은 생성 후 30일이 지나면 만료되고 백업 기능이 없습니다. 만료 후에는 새 DB를 만들고 앱의 접속 정보를 바꾼 뒤 재배포하면 Flyway가 스키마를 다시 만듭니다. 이전 데이터는 복구되지 않으며, 데모 데이터 시딩은 6-2에서 다룹니다.
+
 ## 프로필
 
 | 프로필 | DB | 스키마 | 설정 파일 |
@@ -350,6 +405,7 @@ push와 PR마다 두 작업이 병렬로 돕니다.
 |---|---|---|
 | `h2` | H2 | `./gradlew build` (빌드 + 전체 테스트). 로컬과 같은 조건 |
 | `postgres` | PostgreSQL 17 서비스 컨테이너 | `TEST_DB=postgres`로 **같은 테스트 전체**를 `pgtest` 프로필로 실행 + `SchemaConsistencyTest` |
+| `container` | PostgreSQL 17 서비스 컨테이너 | 이미지를 빌드해 비루트 실행, 헬스체크, `JWT_SECRET` 없을 때 기동 실패, Compose(DB 포트 비공개, 볼륨 유지)를 검사. 레지스트리 푸시와 배포는 하지 않음 |
 
 - **권한:** `contents: read`만 줍니다.
 - **비밀값:** `secrets`를 쓰지 않습니다. DB 비밀번호와 `JWT_SECRET`은 CI 전용 가짜 값입니다.
@@ -368,7 +424,7 @@ push와 PR마다 두 작업이 병렬로 돕니다.
 
 자세한 내용은 [설계 문서](docs/design/05-ci-postgres.md)를 참고하세요.
 
-`prod` 실행에 필요한 환경변수는 [`backend/.env.example`](backend/.env.example)을 참고하세요.
+컨테이너 없이 `prod` 프로필로 실행할 때 필요한 환경변수는 아래와 같습니다. 값의 설명은 [`.env.example`](.env.example)을 참고하세요. (⏳ **미검증:** 로컬에 PostgreSQL이 없어 6-1단계에서 이 명령을 실행해 보지 않았습니다.)
 
 ```powershell
 $env:SPRING_PROFILES_ACTIVE="prod"
@@ -379,7 +435,7 @@ $env:JWT_SECRET="..."   # 32바이트 이상, 없으면 기동 실패
 .\gradlew.bat bootRun
 ```
 
-> 운영 PostgreSQL은 아직 없습니다. 같은 설정(Flyway + validate)을 CI의 PostgreSQL 서비스 컨테이너에서 매번 검증합니다.
+> 운영 PostgreSQL은 아직 없습니다. 같은 설정(Flyway + validate)을 CI의 PostgreSQL 서비스 컨테이너에서 매번 검증합니다. 컨테이너 실행은 [컨테이너 실행](#컨테이너-실행)을 참고하세요.
 
 ## PostgreSQL 전환 체크리스트
 
@@ -398,7 +454,7 @@ H2의 PostgreSQL 호환 모드는 완전한 호환이 아닙니다. 아래 항�
 | ⏳ | **문자열 비교/정렬** | 현재 정렬은 시각과 id 기준이라 영향 없음. 일본어 정렬·검색 기능이 생기면 collation 확인 필요 |
 | ✅ | **네이티브 쿼리** | `nativeQuery`를 쓰는 곳이 없음(코드 검색). 모든 쿼리는 JPQL이고, 전체 테스트가 PostgreSQL에서 통과 |
 | ✅ | **테스트 DB** | Testcontainers 대신 **CI 서비스 컨테이너**로 같은 테스트 101개를 PostgreSQL에서 실행. 로컬 PostgreSQL 검증은 개선 후보로 남김 |
-| ⏳ | **커넥션 풀 설정** | 운영 환경(EC2/RDS)이 정해진 뒤 HikariCP `maximum-pool-size`, 타임아웃 조정 필요 |
+| ⏳ | **커넥션 풀 설정** | 올릴 곳이 정해진 뒤 HikariCP `maximum-pool-size`, 타임아웃 조정 필요 |
 | ✅ | **시간 컬럼 타입** | 모든 `Instant` 컬럼이 `timestamptz`. `validate`와 시각 경계 테스트(자정, 10분 재출현) 통과 |
 | ⏳ | **refresh_tokens 정리** | 폐기·만료 토큰 삭제 배치는 아직 없음 |
 | ✅ | **날짜 계산 위치** | main 코드에 `AT TIME ZONE`, `DATE_TRUNC`, `CAST`, `::date`가 없음(코드 검색). 통계 테스트 16개가 PostgreSQL에서 통과 |
@@ -436,3 +492,9 @@ H2의 PostgreSQL 호환 모드는 완전한 호환이 아닙니다. 아래 항�
 | 연속 학습일 최대 366 | 최근 366일만 조회 | 1년 넘게 연속 학습해도 366으로 표시 | 회원별 연속 기록을 따로 저장 |
 | **Actions 버전 고정 방식** | 워크플로의 액션을 주 버전 태그(`actions/checkout@v7` 등)로 지정 | 태그가 가리키는 커밋이 바뀌면 검토하지 않은 코드가 CI에서 실행될 수 있음 (공급망 위험) | Actions를 **커밋 SHA로 고정**하고, Dependabot으로 버전 업데이트 PR을 받기 |
 | **로컬 PostgreSQL 검증 없음** | 로컬에 Docker가 없어서 `gradlew test`는 H2로만 돎. 마이그레이션 오류는 push 후 CI에서만 잡힘 | 엔티티나 마이그레이션을 고칠 때 피드백이 느림 (push → CI 대기) | Docker를 쓸 수 있게 되면 **Testcontainers**로 로컬에서도 PostgreSQL 통합 테스트를 실행 (`TEST_DB=postgres`와 같은 경로를 재사용) |
+| **컨테이너 로컬 검증 없음** | 로컬에 Docker가 없어서 이미지와 Compose는 CI에서만 검증함. 백업·복구 절차는 실행해 보지 않음 | 복구가 실제로 되는지 모름. Windows에서의 실행도 미검증 | Docker를 쓸 수 있는 환경에서 백업과 복구를 한 번 실행하고, 6-2 전에 절차를 확정 |
+| **운영 이미지와 CI 이미지가 다름** | 레지스트리에 푸시하지 않으므로 플랫폼이 Dockerfile로 다시 빌드 | 같은 소스에서 빌드하지만 같은 결과물은 아님 | 레지스트리를 쓰기로 하면 CI가 검증한 이미지를 커밋 SHA 태그로 배포 |
+| **메모리와 기동 시간은 CI 참고값** | 512 MB 제한에서 힙 상한을 40%로 설정(60% 이상은 강제 종료). 0.1 CPU에서 첫 응답까지 약 2~4분. [측정 결과](docs/design/06-deploy.md) | Render 실제 값이 아님. 잠든 뒤 첫 요청이 몇 분 걸릴 수 있어 Flutter 앱에 대기 안내와 긴 타임아웃이 필요 | 6-2에서 실제 환경에서 측정 |
+| **Render 무료 환경은 30일 시연용** | 후보 조사 기준: 무료 DB가 30일 후 만료, 백업 없음, 15분 비활성 시 잠듦 | 데이터가 초기화될 수 있음. 실제 사용자 데이터를 넣으면 안 됨 | 계속 운영하려면 유료 전환이나 DB 분리를 결정 |
+| **`/api/health`는 DB를 보지 않음** | 항상 `UP`을 반환. DB 상태는 `/actuator/health`에서 확인 | `HEALTHCHECK`가 healthy여도 DB 연결이 끊겼을 수 있음 | CI 스모크는 둘 다 확인. 운영 모니터링은 `/actuator/health`를 사용 |
+| **H2가 운영 이미지에 포함됨** | `runtimeOnly h2`와 h2console 의존성이 jar에 들어감. prod에서는 콘솔이 꺼져 있음 | 이미지 크기와 공격 표면이 조금 늘어남 | 개발 전용 의존성으로 분리 |
